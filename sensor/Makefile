@@ -21,5 +21,5 @@ fuses:
 # Load optiboot on the Atmega.  Who knows what the clones are loaded with...
 bootload:
 	avrdude -p m328p -P /dev/ttyACM0 -c avrisp -b 19200
-	avrdude -p m328p -P /dev/ttyACM0 -c avrisp -b 19200 -U flash:w:/usr/share/arduino/hardware/arduino/bootloaders/optiboot/optiboot_atmega328-Mini.hex -v
+	avrdude -p m328p -P /dev/ttyACM0 -c avrisp -b 19200 -U flash:w:/usr/share/arduino/hardware/arduino/bootloaders/atmega/ATmegaBOOT_168_atmega328_pro_8MHz.hex -v
 
