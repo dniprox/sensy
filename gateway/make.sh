@@ -1,0 +1,1 @@
+g++ -g -Wall  -o a ~/arduinolibs/libraries/Crypto/Curve25519.cpp  ~/arduinolibs/libraries/Crypto/BigNumberUtil.cpp  ~/arduinolibs/libraries/Crypto/AES*.cpp ~/arduinolibs/libraries/Crypto/BlockCipher.cpp  ~/arduinolibs/libraries/Crypto/Crypto.cpp ~/arduinolibs/libraries/Crypto/RNG-linux.cpp -I~/arduinolibs/libraries/Crypto a.cpp -lrf24-bcm 

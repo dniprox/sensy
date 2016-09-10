@@ -1,0 +1,4 @@
+#!/bin/bash
+
+ino build -v -m pro328 && ./upload && ino serial -b 9600
+
