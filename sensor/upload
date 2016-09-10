@@ -1,2 +1,0 @@
-#!/bin/bash
-avrdude -p atmega328p -carduino -v -U flash:w:.build/pro328/firmware.hex:i -P /dev/ttyUSB? -C /etc/avrdude.conf  -b57600

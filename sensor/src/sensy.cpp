@@ -2,24 +2,21 @@
 #include <avr/power.h>
 #include <avr/sleep.h>
 #include <avr/wdt.h> 
-#include <SPI.h>
-#include "Crypto/AES.h"
-#include "Crypto/Curve25519.h"
-#include "Crypto/RNG.h"
-#include "RF24/RF24.h"
-#include "rng.h"
-#include "coding.h"
 #include <pins_arduino.h>
+#include <SPI.h>
+#include "AES.h"
+#include "Curve25519.h"
+#include "RNG.h"
+#include "RF24.h"
+#include "rng.h"
+// INO has "some" issues, just include the source here...
+#include "../lib/coding.h"
+#include "../lib/coding.cpp"
+#include "../lib/message.h"
 
 
 // Serial debugging enabled
 #define debug 0
-
-// To join, use these hardcoded settings
-const uint32_t        joinAddr = 0xabcd12;
-const bool            joinHamm = true;
-const uint8_t         joinChan = 0;
-const rf24_datarate_e joinRate = RF24_250KBPS;
 
 // Gateway will send up the real network config
 uint32_t        netAddr = 0;
@@ -256,7 +253,6 @@ void SendRadioMessage(uint8_t msg[16], uint8_t key[16], bool useHamm)
     radio.startListening();
 }
 
-typedef enum { MSG_JOIN=0, MSG_K0G, MSG_K0S, MSG_K1G, MSG_K1S, MSG_K2G, MSG_K2S, MSG_REPORT, MSG_ACK, MSG_REKEY, MSG_LOG=15 } messageType_t;
 
 
 void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t oldID[3], uint8_t name[9])

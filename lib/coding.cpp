@@ -1,13 +1,22 @@
-#include <avr/interrupt.h>
-#include <avr/power.h>
-#include <avr/sleep.h>
-#include <SPI.h>
-#include "Crypto/AES.h"
-#include "Crypto/Curve25519.h"
-#include "Crypto/RNG.h"
-#include "RF24/RF24.h"
-#include "rng.h"
+//#ifdef __AVR__
+//#include <avr/interrupt.h>
+//#include <avr/power.h>
+//#include <avr/sleep.h>
+//#include <SPI.h>
+//#endif
+#include <string.h>
+
+#include "AES.h"
+#include "Curve25519.h"
+#include "RNG.h"
+//#include "RF24.h"
+//#include "rng.h"
 #include "coding.h"
+
+#ifndef __AVR__
+// Non-AVR means no progmem stuffing of arrays
+#define PROGMEM
+#endif
 
 
 // Hyper-naive parity in straight C.  Assembly it's probably 1 byte on x86 and AVR.
