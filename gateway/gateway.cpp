@@ -4,6 +4,7 @@
 #include <string>
 #include <unistd.h>
 #include <pthread.h>
+#include <MQTTClient.h>
 #include "RF24.h"
 #include "AES.h"
 #include "Curve25519.h"
@@ -14,11 +15,63 @@
 
 RF24 radio(22,0);
 
-// Gateway will send up the real network config
+// TODO:  Following come from .conf file
+
+// Real network config
 uint32_t        netAddr = 0x21dcba;
 bool            netHamm = true;
 uint8_t         netChan = 0;
 rf24_datarate_e netRate = RF24_2MBPS;
+
+
+// MQTT broker, topic
+const char *mqttURL = "tcp://localhost:1883";
+const char *mqttID = "sensy";
+const char *mqttTopic = "sensy1";
+int mqttQOS = 2;
+long mqttTimeout = 10000;
+
+
+void MQTTDelivered(void *ctx, MQTTClient_deliveryToken dt)
+{
+    // Nothing to do here, yet...
+}
+
+
+int MQTTArrived(void *ctx, char *topic, int topicLen, MQTTClient_message *msg)
+{
+    // Not subscribing to anything just yet
+    return 1;
+}
+
+void MQTTDisconnect(void *ctx, char *cause)
+{
+    // This is bad....set flag to retry TODO
+    printf("ERROR: Disconnected from MQTT, cause='%s'\n", cause);
+}
+
+MQTTClient mqtt;
+MQTTClient_message mqttMsg = MQTTClient_message_initializer;
+MQTTClient_deliveryToken mqttToken;
+
+void MQTTInit()
+{
+    int rc;
+    MQTTClient_connectOptions mqttOpts = MQTTClient_connectOptions_initializer;
+
+    MQTTClient_create(&mqtt, mqttURL, mqttID, MQTTCLIENT_PERSISTENCE_DEFAULT, NULL);
+    mqttOpts.keepAliveInterval = 20;
+    mqttOpts.cleansession = 1;
+
+    MQTTClient_setCallbacks(mqtt, NULL, MQTTDisconnect, MQTTArrived, MQTTDelivered);
+
+    if ((rc = MQTTClient_connect(mqtt, &mqttOpts)) != MQTTCLIENT_SUCCESS)
+    {
+        printf("Failed to connect, return code %d\n", rc);
+        exit(-1);       
+    }
+}
+
 
 
 void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hamming )
@@ -146,7 +199,6 @@ void LogMessage(sensor_t *sensor, uint8_t *decMsg)
     printf("LOG: Sensor %d: %s\n", sensor->id, decMsg+1);
 }
 
-
 void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
 {
     printf("SENSOR %d: ", sensor->id);
@@ -156,6 +208,43 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
     }
     printf("\n");
     sensor->lastSeqNo = GetSequenceNum(decMsg);
+
+    // Publish them 
+    MQTTClient_message msg = MQTTClient_message_initializer;
+    char payload[64];
+    char topic[64];
+    int battCnt = 0;
+    int swCnt = 0;
+    int tempCnt = 0;
+    int anCnt = 0;
+    for (int i=0; i<sensor->reportEntries; i++) {
+        switch (sensor->reportType[i]) {
+        case 0:
+            sprintf(payload, "%d %%", sensor->reportState[i]);
+            sprintf(topic, "battery%d", battCnt++);
+            break; 
+        case 1:
+            sprintf(payload, "%d", sensor->reportState[i]?1:0);
+            sprintf(topic, "switch%d", swCnt++);
+            break;
+        case 2:
+            sprintf(payload, "%d C", sensor->reportState[i]);
+            sprintf(topic, "temp%d", tempCnt++);
+            break;
+        case 3:
+            sprintf(payload, "%d", sensor->reportState[i]);
+            sprintf(topic, "analog%d", anCnt++);
+            break;
+        }
+        msg.payload = payload;
+        msg.payloadlen = strlen(payload);
+        msg.qos = mqttQOS;
+        msg.retained = 0;
+        char fullTopic[128];
+        sprintf(fullTopic, "%s/%d/%s", mqttTopic, sensor->id, topic);
+        printf("Publishing: '%s'='%s'\n", fullTopic, payload);
+        MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
+    }
 }
 
 int GetSensorID(uint8_t *msg)
@@ -208,6 +297,10 @@ void ListenerLoop()
     uint32_t packetsBad = 0; // # that were not able to be processed
     uint32_t packetsSent = 0; // # packets GW transmitted initially
     uint32_t packetsResent = 0; // # packets GW re-transmitted (not including Sent above)
+
+
+    MQTTInit();
+
 
     radio.begin();
     RadioSetupNormal(); // Radio set to proper operational channel/etc.

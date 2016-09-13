@@ -13,7 +13,7 @@ SRC=gateway.cpp RNG-linux.cpp ../lib/coding.cpp $(CRYPTO)/Curve25519.cpp $(CRYPT
 OBJ=$(SRC:.cpp=.o)
 
 gateway: $(OBJ)
-	$(CC) $(GCCOPTS) $(INCLUDES) -o gateway $(OBJ) -lpthread -lrf24-bcm
+	$(CC) $(GCCOPTS) $(INCLUDES) -o gateway $(OBJ) -lpthread -lrf24-bcm -lpaho-mqtt3c
 
 .SUFFIXES: .cpp
 

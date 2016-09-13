@@ -4,7 +4,7 @@ all: build upload listen
 
 
 build:
-	ino build -m pro328
+	ino build -v -m pro328
 
 upload:
 	avrdude -p atmega328p -carduino -v -U flash:w:.build/pro328/firmware.hex:i -P /dev/ttyUSB? -C /etc/avrdude.conf -b57600

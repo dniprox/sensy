@@ -1,7 +1,6 @@
 #include <avr/interrupt.h>
 #include <avr/power.h>
 #include <avr/sleep.h>
-#include <SPI.h>
 #include "Crypto/RNG.h"
 #include "rng.h"
 
