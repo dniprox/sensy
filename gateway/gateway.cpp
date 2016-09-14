@@ -400,16 +400,21 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 
     if (sensor->state == WAITREPORT) { // The standard listening loop
         // Special case of K2S repeat (they didn't hear my ACK)
-        CheckMessageAES(decMsg, NULL, msg); // RAW AES encrypted bits we care about
-        if (!memcmp(sensor->lastK2S, decMsg, 16)) {
-            logHex("Repeated K2S, resending last ACK: ", sensor->lastK2SACK, 19);
-            SendRadioRawMessage(sensor->lastK2SACK);
-            packetsGood++;
-            packetsResent++;
-            return true;
+        if (CheckMessageAES(decMsg, NULL, msg)) {  // RAW AES encrypted bits we care about
+            if (!memcmp(sensor->lastK2S, decMsg, 16)) {
+                logHex("Repeated K2S, resending last ACK: ", sensor->lastK2SACK, 19);
+                SendRadioRawMessage(sensor->lastK2SACK);
+                packetsGood++;
+                packetsResent++;
+                return true;
+            }
         }
 
         if (CheckMessageAES(decMsg, sensor->aesKey, msg)) {
+            // Prior encoding key goes away now...
+            memset(sensor->lastK2S, 0, 16);
+            memset(sensor->lastK2SACK, 0, 19);
+
             if (GetMessageType(decMsg) == MSG_JOIN) {
                 packetsGood++;
                 // Same as JOIN but set retryKey to current AES
@@ -446,7 +451,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     packetsSent++;
                 } else {
                     packetsBad++;
-                    logHex("Unexpected: ", decMsg, 16);
+                    logHex("Unexpected in WAITREPORT: ", decMsg, 16);
                     // Weren't expecting this, drop it
                 }
             }
@@ -483,6 +488,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else {
             // Unknown, drop it
             packetsBad++;
+            logHex("Unexpected in JOIN: ", decMsg, 16);
         }
         return true;
     }
@@ -512,6 +518,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else {
             // Something weird, drop it
             packetsBad++;
+            logHex("Unexpected in WAITK0S: ", decMsg, 16);
         }
         return true;
     }
@@ -547,6 +554,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else {
             // Something weird, drop it
             packetsBad++;
+            logHex("Unexpected in WAITK1S: ", decMsg, 16);
         }
         return true;
     }
@@ -577,7 +585,6 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 
             if (Curve25519::dh2(sensor->ky, sensor->fm)) {
                 // If we can get an AES key, we're done here!  OTW this was a dud,don't add
-                memcpy(sensor->aesKey, sensor->ky, 16);
                 if (sensor->joined) {
                     SendSensorAck(sensor, true);
                     // Store this K2S message.  If we see it again (in encrypted form, we don't
@@ -595,6 +602,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                         SendSensorAck(sensor, false); // Unencrypted ACK
                     }
                 }
+                memcpy(sensor->aesKey, sensor->ky, 16);
                 logHex("Shared Secret = ", sensor->aesKey, 16);
             }
             if (!sensor->joined) {
@@ -616,6 +624,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else {
             // Something weird, drop it
             packetsBad++;
+            logHex("Unexpected in WAITK2S: ", decMsg, 16);
         }
         return true;
     }

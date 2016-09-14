@@ -16,7 +16,7 @@
 
 
 // Serial debugging enabled
-#define debug 0
+#define debug 1
 
 // Gateway will send up the real network config
 uint32_t        netAddr = 0;
@@ -661,10 +661,12 @@ SENDK2S:
         }
         ClockNormal(); // It'll be stopped right afterwards, anyways
         if (!gotResp) {
-            if (retries--) goto SENDK2S;
-            else {
-                if (debug) Serial.println("No ACK received, ignoring");
-            }
+            // At this stage we're committed to the new key.  They may have heard my new secret and sent my ACK
+            goto SENDK2S;  // 
+            //if (retries--) goto SENDK2S;
+            //else {
+            //    if (debug) Serial.println("No ACK received, ignoring");
+            //}
         }
 
         radio.powerDown(); // At this point, no talking while we think...
