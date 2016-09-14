@@ -1,0 +1,86 @@
+#include <avr/interrupt.h>
+#include <avr/power.h>
+#include <avr/sleep.h>
+#include <avr/wdt.h>
+#include <pins_arduino.h>
+#include <SPI.h>
+#include "clock.h"
+#include "rng.h"
+
+
+#define debug 0
+
+static bool lowBatt=true; // If we're below 8mhz operating voltage
+void ClockSetLowBatt(bool state)
+{
+    if (debug && (lowBatt != state)) {
+        Serial.print("LOWBATT=");
+        Serial.println(lowBatt?"true":"false");
+    }
+    lowBatt = state;
+}
+
+
+void ClockDelay(uint16_t ms)
+{
+    uint32_t done = FromNowMS(ms);
+    while (millis() < done) { /* nada */ }
+}
+
+
+static void SetClockPrescaler(uint8_t clockPrescaler);
+
+static bool isClockSlow = false;
+
+void ClockSlow()
+{
+    if (isClockSlow) return; // Already in slow mode
+    if (debug) {
+        Serial.println("CLOCKSLOW");
+        Serial.flush();
+    }
+    RandEnable(false);
+    isClockSlow = true;
+    SetClockPrescaler(0x04); // /16, 0.5MHz
+}
+
+void ClockNormal()
+{
+    if (!isClockSlow) return; // Already in normal mode
+
+    if (!lowBatt) SetClockPrescaler(0x00); // /1, 8MHz
+    else SetClockPrescaler(0x01); // /2, 4 MHz
+    RandEnable(true);
+    isClockSlow = false;
+    if (debug) {
+        Serial.flush();
+        Serial.end();
+        Serial.begin(lowBatt?19200:9600); // At 4MHz this is effectively 2x the baud rate
+        Serial.println("CLOCKFAST");
+        Serial.flush();
+    }
+}
+
+uint32_t FromNowMS(uint32_t delta)
+{
+    uint32_t now = millis();
+    if (isClockSlow) {
+        // Divide by 16 (since we're at .5MHz, not 8)
+        delta = (delta >> 4) & (0x0fff);
+    } else if (lowBatt) {
+        // Divide by 2 (since we're at 4MHz, not 8)
+        delta = (delta >> 1) & (0x7fff);
+    }
+    if (delta==0) delta = 1;
+    now += delta;
+    return now;
+}
+
+static void SetClockPrescaler(uint8_t clockPrescaler)
+{
+    uint8_t oldSREG = SREG;
+    cli();                  // Below is a timed sequence, no IRQs allowed
+    CLKPR = _BV(CLKPCE);    // Enable writes to the clock prescale register
+    CLKPR = clockPrescaler; // Write new value
+    SREG = oldSREG;         // Restore IRQs
+}

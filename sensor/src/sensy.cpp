@@ -9,6 +9,7 @@
 #include "RNG.h"
 #include "RF24.h"
 #include "rng.h"
+#include "clock.h"
 // INO has "some" issues, just include the source here...
 #include "../lib/coding.h"
 #include "../lib/coding.cpp"
@@ -45,58 +46,8 @@ RF24 radio(7,8);
  
 const int mySwitch0 = 2;
 
-long readVcc();
-void setClockPrescaler(uint8_t clockPrescaler);
+bool lowBatt = true;
 
-volatile bool stopThePresses = false; // set by ISR to signal we need to send report back
-
-#define CLOCK_PRESCALER_1   (0x0)
-#define CLOCK_PRESCALER_2   (0x1)
-#define CLOCK_PRESCALER_4   (0x2)
-#define CLOCK_PRESCALER_8   (0x3)
-#define CLOCK_PRESCALER_16  (0x4)
-#define CLOCK_PRESCALER_32  (0x5)
-#define CLOCK_PRESCALER_64  (0x6)
-#define CLOCK_PRESCALER_128 (0x7)
-#define CLOCK_PRESCALER_256 (0x8)
-
-
-bool isClockSlow = false;
-void ClockSlow()
-{
-    if (isClockSlow) return; // Already in slow mode
-    if (debug) {
-        Serial.println("CLOCKSLOW");
-        Serial.flush();
-    }
-    RandEnable(false);
-    isClockSlow = true;
-    setClockPrescaler(CLOCK_PRESCALER_16);
-}
-
-void ClockNormal()
-{
-    if (!isClockSlow) return; // Already in normal mode
-
-    setClockPrescaler(CLOCK_PRESCALER_1);
-    RandEnable(true);
-    isClockSlow = false;
-    if (debug) {
-        Serial.println("CLOCKFAST");
-        Serial.flush();
-    }
-}
-
-uint32_t FromNowMS(uint32_t delta)
-{
-    uint32_t now = millis();
-    if (isClockSlow) {
-        delta = (delta >> 4) & (0x0fff);
-        if (delta==0) delta = 1;
-    }
-    now += delta;
-    return now;
-}
 
 // Disable everything we can think of in the ADC block
 void ShutdownADC()
@@ -128,7 +79,7 @@ uint16_t ReadInternalBatteryTempFast()
 
     // Set bandgap input
     ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-    delay(4);
+    ClockDelay(5);
 
     // And...start ADC and busy wait until it's done
     ADCSRA |= _BV(ADSC);
@@ -141,13 +92,17 @@ uint16_t ReadInternalBatteryTempFast()
 
     // Scale results.  VCC=1023L, Vref=1100mV; Vref(mV)/Vref(cnt) = VCC(mV)/1023; => Vref(mV)*1023/Vref(cnt) = VCC(mV)
     batt = (1100L*1023L) / res; // 1100mV, 2^10 as max
+    
+    // If 2.4V or below need to run at 4MHz, not 8, so signal this
+    ClockSetLowBatt((batt <= 2400)?true:false);
+
     batt -= 1000; // bat = bat - 1.0V
     batt /= 10; // 1000 => 100 
     if (batt > 255) batt = 255; // Can't return above 3.55V
 
     // Set the internal reference and mux.
     ADMUX = (_BV(REFS1) | _BV(REFS0) | _BV(MUX3));
-    delay(4);
+    ClockDelay(5);
 
     // And...start ADC and busy wait until it's done
     ADCSRA |= _BV(ADSC);
@@ -168,23 +123,6 @@ uint16_t ReadInternalBatteryTempFast()
 }
 
 
-
-void setClockPrescaler(uint8_t clockPrescaler) {
-  if (clockPrescaler <= CLOCK_PRESCALER_256) {
-    // Disable interrupts.
-    uint8_t oldSREG = SREG;
-    cli();
-
-    // Enable change.
-    CLKPR = _BV(CLKPCE); // write the CLKPCE bit to one and all the other to zero
-
-    // Change clock division.
-    CLKPR = clockPrescaler; // write the CLKPS0..3 bits while writing the CLKPE bit to zero
-
-    // Recopy interrupt register.
-    SREG = oldSREG;
-  }
-}
 
 #if debug
 void logHex(const char *header, const uint8_t *bytes, int cnt)
@@ -450,6 +388,11 @@ void ProcessACK(uint8_t *dec)
 // the setup routine runs once when you press reset:
 void setup()
 {
+    // We start at INTOSC/8 = 1MHz, so let's check the battery and move to proper speed
+    ReadInternalBatteryTempFast();
+    ReadInternalBatteryTempFast();
+    ClockNormal();
+
     // Initialize the digital pin as an input pullup, so they don't float
     // Later individual pins can be reassigned output if needed
     for (uint8_t i=0; i<=A7; i++) {
@@ -460,7 +403,12 @@ void setup()
     RandSetup();
     RandEnable(true);
     SetupSensors();
-    if (debug) Serial.begin(9600);
+    if (debug) {
+        Serial.begin(9600);
+        Serial.println("Initializing...");
+        Serial.flush();
+        ClockDelay(100);
+    }
     radio.begin();
 }
 
@@ -683,7 +631,6 @@ SENDK2S:
         }
     } else /* joined */ {
         ClockNormal();
-        stopThePresses = false;
         radio.powerUp();
         memset(msg, 0, 16);
         SetMessageTypeSeq(msg, MSG_REPORT, seqNo);
