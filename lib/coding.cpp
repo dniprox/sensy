@@ -225,7 +225,7 @@ bool CheckMessageAES(uint8_t decMsg[16], const uint8_t aesKey[16], const uint8_t
 }
 
 
-void CodeMessage(uint8_t done[19], uint8_t outMsg[16], uint8_t key[16], bool useHamm)
+void CodeMessage(uint8_t done[19], uint8_t outMsg[16], uint8_t key[16])
 {
     uint8_t outMsgAES[16];     // AES encrypted copy
     uint8_t outMsgAESHammA[5], outMsgAESHammB[5], outMsgAESHammC[5], outMsgAESHammD[5]; // Hamming encoded, AES encrypted, raw message
@@ -244,14 +244,10 @@ void CodeMessage(uint8_t done[19], uint8_t outMsg[16], uint8_t key[16], bool use
         memcpy(outMsgAES, outMsg, 16);
     }
 
-    if (useHamm) {
-        // Get hamming codewords
-        encode_hamming(outMsgAESHammA, outMsgAESHammB, outMsgAESHammC, outMsgAESHammD, outMsgAES);
+    // Get hamming codewords
+    encode_hamming(outMsgAESHammA, outMsgAESHammB, outMsgAESHammC, outMsgAESHammD, outMsgAES);
 
-        // Pack them interleaved as raw bytes for transmission
-        interleave_4x38(done, outMsgAESHammA, outMsgAESHammB, outMsgAESHammC, outMsgAESHammD);
-    } else {
-        memcpy(done, outMsgAES, 16);
-    }
+    // Pack them interleaved as raw bytes for transmission
+    interleave_4x38(done, outMsgAESHammA, outMsgAESHammB, outMsgAESHammC, outMsgAESHammD);
 }
 

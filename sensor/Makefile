@@ -15,9 +15,9 @@ listen:
 clean:
 	ino clean
 
-# Program the fuses for no BOD, internal 8mhz oscillator using Arduino-based ISP
+# Program the fuses for no BOD, internal 8mhz oscillator, divided by 8, using Arduino-based ISP
 fuses:
-	avrdude -p m328p -P /dev/ttyACM0 -c avrisp -b 19200 -U lfuse:w:0xe2:m -U hfuse:w:0xda:m -U efuse:w:0xff:m 
+	avrdude -p m328p -P /dev/ttyACM0 -c avrisp -b 19200 -U lfuse:w:0x62:m -U hfuse:w:0xda:m -U efuse:w:0xff:m 
 
 # Load optiboot on the Atmega.  Who knows what the clones are loaded with...
 bootload:

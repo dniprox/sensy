@@ -4,12 +4,14 @@
 #include <avr/wdt.h> 
 #include <pins_arduino.h>
 #include <SPI.h>
+#include <EEPROM.h>
 #include "AES.h"
 #include "Curve25519.h"
 #include "RNG.h"
 #include "RF24.h"
 #include "rng.h"
 #include "clock.h"
+#include "eeprom.h"
 // INO has "some" issues, just include the source here...
 #include "../lib/coding.h"
 #include "../lib/coding.cpp"
@@ -21,7 +23,6 @@
 
 // Gateway will send up the real network config
 uint32_t        netAddr = 0;
-bool            netHamm = true;
 uint8_t         netChan = 0;
 rf24_datarate_e netRate = RF24_250KBPS;
 
@@ -31,7 +32,7 @@ const uint8_t retriesReport = 15;
 bool joined = false;
 uint8_t seqNo = 0;
 uint8_t aesKey[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-uint8_t sensorID[3] = {0,0,0};
+uint8_t sensorMAC[4] = {0,0,0,0};
 
 // Reported time at the gateway for last ACK
 uint8_t  gwHour = 0;
@@ -45,9 +46,6 @@ uint8_t  gwWeekday = 0;
 RF24 radio(7,8);
  
 const int mySwitch0 = 2;
-
-bool lowBatt = true;
-
 
 // Disable everything we can think of in the ADC block
 void ShutdownADC()
@@ -177,43 +175,43 @@ int GetSequenceNum(const uint8_t msg[16])
     return (msg[0] & 0x0f);
 }
 
-void SendRadioMessage(uint8_t msg[16], uint8_t key[16], bool useHamm)
+void SendRadioMessage(uint8_t msg[16], uint8_t key[16])
 {
     uint8_t bytes[19];
 
     logHex(key?"AES: ":"PLAINTEXT: ",  msg, 16);
 
-    CodeMessage(bytes, msg, key, useHamm);
+    CodeMessage(bytes, msg, key);
 
     radio.stopListening();
-    radio.write( bytes, useHamm?19:16 );
+    radio.write( bytes, 19 );
     // TBD - listen before sending?  Check for error?
     radio.startListening();
 }
 
 
 
-void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t oldID[3], uint8_t name[9])
+void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4], uint8_t name[8])
 {
     memset(msg, 0, 16);
     SetMessageTypeSeq(msg, MSG_JOIN, 0);
     msg[1] = protoVersion;
-    msg[2] = oldID[0];
-    msg[3] = oldID[1];
-    msg[4] = oldID[2]<<2;
-    memcpy(msg+5, name, 9);
+    msg[2] = mac[0];
+    msg[3] = mac[1];
+    msg[4] = mac[2];
+    msg[5] = mac[3];
+    memcpy(msg+6, name, 8);
 }
 
 
 
 
-void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hamming )
+void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr )
 {
     if (debug) {
         Serial.print("RADIO rate="); Serial.println(rate);
         Serial.print("RADIO chann="); Serial.println(channel);
         Serial.print("RADIO addr="); Serial.println(addr, HEX);
-        Serial.print("RADIO hamming="); Serial.println(hamming);
     }
     radio.stopListening();
     radio.setPALevel(RF24_PA_MAX);  // Always yell
@@ -222,7 +220,7 @@ void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hammi
     radio.setChannel(channel);
     radio.disableCRC();
     radio.setAutoAck(false);
-    radio.setPayloadSize(hamming?19:16);
+    radio.setPayloadSize(19);
     radio.openWritingPipe(addr);
     radio.openReadingPipe(1, addr);
     radio.startListening();
@@ -230,16 +228,21 @@ void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hammi
 
 void RadioSetupJoin()
 {
-    RadioSetup(joinRate, joinChan, joinAddr, joinHamm);
+    RadioSetup(joinRate, joinChan, joinAddr);
 }
 
 void RadioSetupNormal()
 {
-    RadioSetup(netRate, netChan, netAddr, netHamm);
+    RadioSetup(netRate, netChan, netAddr);
 }
 
 void PowerSensors(bool powered);
 bool CheckSensors();
+
+// Is this report due to an event (interrupt)?  If so, send it out with
+// shorter timeouts to make it get there sooner than standard report-ins.
+bool irq = false;
+
 
 // lowest power sleep for ~secs
 // Assumes radio already powered down
@@ -271,7 +274,7 @@ void ZZZ(uint16_t secs)
     PowerSensors(false); // Don't waste power when we're lot looking
 
     secs = secs * 31; // ~1/32ms
-    bool irq = false;
+    irq = false;
 
     while (secs && !irq) {
         noInterrupts ();           // timed sequence follows
@@ -329,16 +332,16 @@ bool CheckSensors()
 {
     static bool lastSwitch0 = false;
     static bool nextSwitch0 = false; // Debounce by only updating global switch state on 2 consecutive reads same
-    bool irq = false;
+    bool wantIRQ = false;
 
     if (digitalRead(mySwitch0) == LOW) nextSwitch0 = false;
     else nextSwitch0 = true;
     if (lastSwitch0 == nextSwitch0) {
-        if (switch0 != nextSwitch0) irq = true;
+        if (switch0 != nextSwitch0) wantIRQ = true;
         switch0 = nextSwitch0;
     }
     lastSwitch0 = nextSwitch0;
-    return irq;
+    return wantIRQ;
 }
 
 
@@ -385,6 +388,34 @@ void ProcessACK(uint8_t *dec)
     logHex("Got ACK:", dec, 16);
 }
 
+// Get and verify existing MAC from EEPROM.  If invalid/missing make one
+void CreateOrGetMAC()
+{
+    ClockNormal();
+    RandEnable(true);
+    sensorMAC[0] = EEPROM.read(EEPROM_MAC_0);
+    sensorMAC[1] = EEPROM.read(EEPROM_MAC_1);
+    sensorMAC[2] = EEPROM.read(EEPROM_MAC_2);
+    sensorMAC[3] = EEPROM.read(EEPROM_MAC_3);
+    uint8_t ck = EEPROM.read(EEPROM_MAC_CK);
+    ck ^= sensorMAC[0] ^ sensorMAC[1] ^ sensorMAC[2] ^ sensorMAC[3] ^ 0xbe;
+    if (ck==0) return; // Checksum OK, we're done here
+
+    do {
+        sensorMAC[0] = RandGet();
+        sensorMAC[1] = RandGet();
+        sensorMAC[2] = RandGet();
+        sensorMAC[3] = RandGet();
+    } while (!sensorMAC[0] && !sensorMAC[1] && !sensorMAC[2] && !sensorMAC[3]);
+    ck = sensorMAC[0] ^ sensorMAC[1] ^ sensorMAC[2] ^ sensorMAC[3] ^ 0xbe;
+    EEPROM.write(EEPROM_MAC_0, sensorMAC[0]);
+    EEPROM.write(EEPROM_MAC_1, sensorMAC[1]);
+    EEPROM.write(EEPROM_MAC_2, sensorMAC[2]);
+    EEPROM.write(EEPROM_MAC_3, sensorMAC[3]);
+    EEPROM.write(EEPROM_MAC_CK, ck);
+}
+
+
 // the setup routine runs once when you press reset:
 void setup()
 {
@@ -402,12 +433,15 @@ void setup()
     
     RandSetup();
     RandEnable(true);
+
+    // Who are we, again?
+    CreateOrGetMAC();
+
     SetupSensors();
     if (debug) {
         Serial.begin(9600);
         Serial.println("Initializing...");
         Serial.flush();
-        ClockDelay(100);
     }
     radio.begin();
 }
@@ -423,7 +457,6 @@ void loop()
     bool gotResp;
     uint8_t retries;
     uint8_t *aesPtr;
-    bool retryHamm = true;
     uint32_t now;
     uint32_t timeoutDelay = 1000L;
     uint8_t toggle = LOW;
@@ -441,15 +474,14 @@ void loop()
        
         RadioSetupJoin();
         aesPtr = NULL;
-        retryHamm = joinHamm;
        
 SENDJOIN:
         ClockNormal();
-        SetJoinMessage(msg, 1, sensorID, (uint8_t*)"SENSOR1  ");
+        SetJoinMessage(msg, 1, sensorMAC, (uint8_t*)"DOORWIND");
         logHex("Sending JOIN: ", msg, 16);
        
         radio.powerUp();
-        SendRadioMessage(msg, aesPtr, retryHamm);
+        SendRadioMessage(msg, aesPtr);
        
         // Wait for timeout then resend if nothing comes back
         timeoutDelay = 1000L + RandGet();
@@ -493,7 +525,7 @@ SENDJOIN:
 SENDK0S:
         ClockNormal();
         logHex("Sending K0S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr, retryHamm);
+        SendRadioMessage(msg, aesPtr);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         now = millis();
@@ -535,7 +567,7 @@ SENDK0S:
 SENDK1S:
         ClockNormal();
         logHex("Sending K1S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr, retryHamm);
+        SendRadioMessage(msg, aesPtr);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         now = millis();
@@ -568,12 +600,8 @@ SENDK1S:
         memcpy(ky+26, rec+1, 6);
 
         netAddr = ((uint32_t)rec[7]) | (((uint32_t)rec[8])<<8) | (((uint32_t)rec[9])<<16) & 0xffffff;
-        netHamm = (rec[10]&0x80)?true:false;
         netChan = rec[10]&0x7f;
         netRate = (rf24_datarate_e)(rec[13]&0x03);
-        sensorID[0] = rec[11];
-        sensorID[1] = rec[12];
-        sensorID[2] = rec[13]>>2;
        
         memset(msg, 0, 16);
         SetMessageTypeSeq(msg, MSG_K2S, 1);
@@ -586,7 +614,7 @@ SENDK1S:
 SENDK2S:
         ClockNormal();
         logHex("Sending K2S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr, netHamm);
+        SendRadioMessage(msg, aesPtr);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         while (millis() < timeout) {
@@ -626,7 +654,6 @@ SENDK2S:
             memcpy(aesKey, ky, 16);
             RadioSetupNormal();
             seqNo = 0;
-            retryHamm = netHamm;
             return; // We're joined, go back to main....
         }
     } else /* joined */ {
@@ -641,9 +668,10 @@ SENDREPORT:
         ClockNormal();
         UpdateReportMsg(msg);
         logHex("Sending report: ", msg, 16);
-        SendRadioMessage(msg, aesKey, netHamm);
+        SendRadioMessage(msg, aesKey);
         ClockSlow();
-        timeout = FromNowMS(timeoutDelay);
+        // For IRQ (state changes) we want to send this ASAP, let other check-ins back off for us
+        timeout = FromNowMS(irq?timeoutDelay/10:timeoutDelay);
         while (millis() < timeout) {
             if (radio.available()) {
                 ClockNormal();
@@ -678,7 +706,6 @@ SENDREPORT:
             // Make new code first
             Curve25519::dh1(km, fm);
             seqNo = 0;
-            retryHamm = netHamm;
             retries = 0xff;
             goto SENDJOIN;
         }

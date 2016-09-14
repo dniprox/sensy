@@ -16,6 +16,9 @@ void ClockSetLowBatt(bool state)
     if (debug && (lowBatt != state)) {
         Serial.print("LOWBATT=");
         Serial.println(lowBatt?"true":"false");
+        Serial.flush();
+        Serial.end();
+        Serial.begin(state?19200:9600); // At 4MHz this is effectively 2x the baud rate
     }
     lowBatt = state;
 }
@@ -53,9 +56,6 @@ void ClockNormal()
     RandEnable(true);
     isClockSlow = false;
     if (debug) {
-        Serial.flush();
-        Serial.end();
-        Serial.begin(lowBatt?19200:9600); // At 4MHz this is effectively 2x the baud rate
         Serial.println("CLOCKFAST");
         Serial.flush();
     }

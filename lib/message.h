@@ -2,7 +2,6 @@
 
 // To join, use these hardcoded settings
 const uint32_t        joinAddr = 0xabcd12;
-const bool            joinHamm = true;
 const uint8_t         joinChan = 0;
 const rf24_datarate_e joinRate = RF24_250KBPS;
 

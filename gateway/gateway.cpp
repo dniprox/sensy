@@ -19,7 +19,6 @@ RF24 radio(22,0);
 
 // Real network config
 uint32_t        netAddr = 0x21dcba;
-bool            netHamm = true;
 uint8_t         netChan = 0;
 rf24_datarate_e netRate = RF24_2MBPS;
 
@@ -74,12 +73,11 @@ void MQTTInit()
 
 
 
-void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hamming )
+void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr )
 {
     printf("RADIO rate=%d\n",rate);
     printf("RADIO chann=%d\n",channel);
     printf("RADIO addr=0x%0x\n",addr);
-    printf("RADIO hamming=%d\n",hamming);
     radio.stopListening();
     radio.setPALevel(RF24_PA_MAX);  // Always yell
     radio.setDataRate(rate);
@@ -87,7 +85,7 @@ void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hammi
     radio.setChannel(channel);
     radio.disableCRC();
     radio.setAutoAck(false);
-    radio.setPayloadSize(hamming?19:16);
+    radio.setPayloadSize(19);
     radio.openWritingPipe(addr);
     radio.openReadingPipe(1, addr);
     radio.startListening();
@@ -95,12 +93,12 @@ void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr, bool hammi
 
 void RadioSetupJoin()
 {
-    RadioSetup(joinRate, joinChan, joinAddr, joinHamm);
+    RadioSetup(joinRate, joinChan, joinAddr);
 }
 
 void RadioSetupNormal()
 {
-    RadioSetup(netRate, netChan, netAddr, netHamm);
+    RadioSetup(netRate, netChan, netAddr);
 }
 
 
@@ -111,7 +109,7 @@ typedef enum { WAITJOIN, WAITK0S, WAITK1S, WAITK2S, WAITREPORT } state_t;
 typedef struct {
     bool joined;
     state_t state;
-    int     id;    // SID
+    uint32_t     id;
     char    name[10];
 
     uint8_t aesKey[16];
@@ -169,7 +167,7 @@ void SendRadioMessage(uint8_t msg[16], uint8_t key[16])
 {
     uint8_t bytes[19];
 
-    CodeMessage(bytes, msg, key, true);
+    CodeMessage(bytes, msg, key);
     memcpy(lastBytes, bytes, 19); // Squirrel away in case it's a K2SACK
 
     radio.stopListening();
@@ -213,7 +211,7 @@ void LogMessage(sensor_t *sensor, uint8_t *decMsg)
 
 void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
 {
-    printf("SENSOR %d: ", sensor->id);
+    printf("SENSOR %08x: ", sensor->id);
     for (int i=0; i<13; i++) { 
         sensor->reportState[i] = decMsg[i+1];
         printf("0x%02x(%d) ", sensor->reportState[i], sensor->reportState[i]);
@@ -253,15 +251,15 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
         msg.qos = mqttQOS;
         msg.retained = 0;
         char fullTopic[128];
-        sprintf(fullTopic, "%s/%d/%s", mqttTopic, sensor->id, topic);
+        sprintf(fullTopic, "%s/%s/%08x/%s", mqttTopic, sensor->name, sensor->id, topic);
         printf("Publishing: '%s'='%s'\n", fullTopic, payload);
         MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
     }
 }
 
-int GetSensorID(uint8_t *msg)
+uint32_t GetSensorID(uint8_t *msg)
 {
-    int id = (msg[0]) | (msg[1]<<8) | (((msg[2]>>2)<<16)&0x3f0000);
+    uint32_t id = (msg[0]) | (msg[1]<<8) | (msg[2]<<16) | (msg[3]<<24);
     return id;
 }
 
@@ -473,9 +471,9 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             logHex("<JOIN: ", decMsg, 16);
             sensor->id = GetSensorID(decMsg+2);
             sensor->joinTime = time(NULL);
-            memcpy(sensor->name, decMsg+5, 9);
-            sensor->name[9] = 0;
-            printf("Sensor: %s\n", sensor->name);
+            memcpy(sensor->name, decMsg+6, 8);
+            sensor->name[8] = 0;
+            printf("Sensor: MAC: %08x, NAME=%s\n", sensor->id, sensor->name);
             Curve25519::dh1(sensor->km, sensor->fm);
             SetMessageTypeSeq(sensor->outMsg, MSG_K0G, 1);
             memcpy(sensor->outMsg+1, sensor->km, 13);
@@ -533,7 +531,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             sensor->outMsg[7] = netAddr & 0xff;
             sensor->outMsg[8] = (netAddr>>8) & 0xff;
             sensor->outMsg[9] = (netAddr>>16) & 0xff;
-            sensor->outMsg[10] = (netHamm?0x80:0x00) | (netChan & 0x7f);
+            sensor->outMsg[10] = (netChan & 0x7f);
             sensor->outMsg[11] = 0; //
             sensor->outMsg[12] = 0; //
             sensor->outMsg[13] = (netRate & 0x03);
@@ -591,10 +589,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     // keep the old key, we will resend the same ACK encoded w/the old key
                     memcpy(sensor->lastK2S, msg, 16);
                     memcpy(sensor->lastK2SACK, lastBytes, 19);
-//                    memcpy(rekeySensor, &newSensor, sizeof(sensor_t));
                 } else {
-//                    sensor = (sensor_t*)realloc(sensor, sizeof(sensor_t)*(++sensors));
-//                    memcpy(&sensor[sensors-1], &newSensor, sizeof(newSensor));
                     // This is a new sensor, so we're on join frequency and won't see any repeated requests.
                     // So spray out several ACKs in case the 1st one isn't heard (don't mind wasting power here)
                     for (int cnt=0; cnt<10; cnt++) {
