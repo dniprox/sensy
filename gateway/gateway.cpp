@@ -4,6 +4,7 @@
 #include <string>
 #include <unistd.h>
 #include <pthread.h>
+#include <termios.h>
 #include <MQTTClient.h>
 #include "RF24.h"
 #include "AES.h"
@@ -137,7 +138,7 @@ typedef struct {
 } sensor_t;
 
 int sensors = 0;
-sensor_t *sensor = NULL;
+sensor_t *gSensor = NULL;
 
 messageType_t GetMessageType(const uint8_t msg[16])
 {
@@ -286,15 +287,35 @@ bool HandleSensor(uint8_t rawMsg[16], sensor_t *sensor);
 
 time_t joinTimeout = 0;
 
+
+bool inputAvailable()  
+{
+  struct timeval tv;
+  fd_set fds;
+  tv.tv_sec = 0;
+  tv.tv_usec = 0;
+  FD_ZERO(&fds);
+  FD_SET(STDIN_FILENO, &fds);
+  select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
+  return (FD_ISSET(0, &fds));
+}
+
+int getch(void) {
+    if (!inputAvailable()) return 0;
+    struct termios oldattr, newattr;
+    int ch;
+    tcgetattr( STDIN_FILENO, &oldattr );
+    newattr = oldattr;
+    newattr.c_lflag &= ~( ICANON | ECHO );
+    tcsetattr( STDIN_FILENO, TCSANOW, &newattr );
+    ch = getchar();
+    tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
+    return ch;
+}
+
 void ListenerLoop()
 {
     uint8_t rawMsg[19], msg[16];
-
-//    int retriesLeft = 0;
-//    time_t retryTime;
-
-    // Hold the last rekey message/ack to handle case where sensor doesn't see my first ACK
-//    uint8_t lastK2S[16], lastK2SACK[19];
 
     time_t dumpTime = time(NULL)+10;
 
@@ -306,10 +327,14 @@ void ListenerLoop()
     radio.begin();
     RadioSetupNormal(); // Radio set to proper operational channel/etc.
 
-    newJoin = true;
-//    rekeySensor = NULL;
+    newJoin = false;
 
     while (1) {
+
+        if (getch() == 'j') {
+            printf("JOIN REQUESTED\n");
+            newJoin = true;
+        }
 
         if (time(NULL) > dumpTime) {
             printf("---------------------------------------------------------------\n");
@@ -336,17 +361,17 @@ void ListenerLoop()
         if (newJoin) {
             bool idle = true;
             for (int i=0; idle && (i<sensors); i++) {
-                if (sensor[i].state != WAITREPORT) idle = false;  // Somebody waiting on something
-                if (!sensor[i].joined) idle=false; // Already joining
+                if (gSensor[i].state != WAITREPORT) idle = false;  // Somebody waiting on something
+                if (!gSensor[i].joined) idle=false; // Already joining
             }
             if (idle) {
                 // Add empty sensor at end of list for this...
                 newJoin = false;
                 RadioSetupJoin();
-                sensor = (sensor_t*)realloc(sensor, sizeof(sensor_t)*(++sensors));
-                memset(&sensor[sensors-1], 0, sizeof(sensor_t));
-                sensor[sensors-1].joined = false;
-                sensor[sensors-1].state = WAITJOIN;
+                gSensor = (sensor_t*)realloc(gSensor, sizeof(sensor_t)*(++sensors));
+                memset(&gSensor[sensors-1], 0, sizeof(sensor_t));
+                gSensor[sensors-1].joined = false;
+                gSensor[sensors-1].state = WAITJOIN;
                 joinTimeout = time(NULL) + joinMaxTime;
                 continue;
             }
@@ -355,12 +380,12 @@ void ListenerLoop()
         // If no data, check for some retries pending
         if (!radio.available() && sensors) {
             retrySensor = (retrySensor+1) % sensors;
-            if ( (sensor[retrySensor].retriesLeft > 0) && (time(NULL) > sensor[retrySensor].retryTime) ) {
-                logHex("Resend: ", sensor[retrySensor].outMsg, 16);
+            if ( (gSensor[retrySensor].retriesLeft > 0) && (time(NULL) > gSensor[retrySensor].retryTime) ) {
+                logHex("Resend: ", gSensor[retrySensor].outMsg, 16);
                 packetsResent++;
-                SendRadioMessage(sensor[retrySensor].outMsg, sensor[retrySensor].joined ? sensor[retrySensor].aesKey : NULL);
-                sensor[retrySensor].retriesLeft--;
-                sensor[retrySensor].retryTime = time(NULL) + 1;
+                SendRadioMessage(gSensor[retrySensor].outMsg, gSensor[retrySensor].joined ? gSensor[retrySensor].aesKey : NULL);
+                gSensor[retrySensor].retriesLeft--;
+                gSensor[retrySensor].retryTime = time(NULL) + 1;
             }
             usleep(sleepTimeUs);
             continue;
@@ -378,9 +403,9 @@ void ListenerLoop()
         bool handled = false;
         for (int i=0; (!handled) && (i < sensors); i++) {
             // Anyone got this?
-            if (HandleSensor(msg, &sensor[i])) {
+            if (HandleSensor(msg, &gSensor[i])) {
                 corrBits += corr;
-                sensor[i].lastReport = time(NULL);
+                gSensor[i].lastReport = time(NULL);
                 handled = true;
             }
         }
@@ -595,6 +620,16 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     for (int cnt=0; cnt<10; cnt++) {
                         usleep(sleepTimeUs*2);
                         SendSensorAck(sensor, false); // Unencrypted ACK
+                    }
+
+                    // In the case of re-joining of an existing sensor, overwrite any internal
+                    // state for the sensor w/the new one and remove the "joined" copy
+                    for (int i=0; i<sensors-1; i++) {
+                        if (gSensor[i].id == sensor->id) {
+                            memcpy(&gSensor[i], sensor, sizeof(sensor_t));
+                            sensors--;
+                            sensor = &gSensor[i];
+                        }
                     }
                 }
                 memcpy(sensor->aesKey, sensor->ky, 16);
