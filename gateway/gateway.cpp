@@ -12,17 +12,12 @@
 
 #include "coding.h"
 #include "message.h"
+#include "radio.h"
 
-
-RF24 radio(22,0);
-
-// TODO:  Following come from .conf file
-
-// Real network config
-uint32_t        netAddr = 0x21dcba;
-uint8_t         netChan = 0;
-rf24_datarate_e netRate = RF24_2MBPS;
-
+// My network 
+static uint32_t        netAddr = 0x21dcba;
+static uint8_t         netChan = 0;
+static rf24_datarate_e netRate = RF24_2MBPS;
 
 // MQTT broker, topic
 const char *mqttURL = "tcp://localhost:1883";
@@ -74,35 +69,6 @@ void MQTTInit()
 
 
 
-void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr )
-{
-    printf("RADIO rate=%d\n",rate);
-    printf("RADIO chann=%d\n",channel);
-    printf("RADIO addr=0x%0x\n",addr);
-    radio.stopListening();
-    radio.setPALevel(RF24_PA_MAX);  // Always yell
-    radio.setDataRate(rate);
-    radio.setAddressWidth(3);       // Always 3
-    radio.setChannel(channel);
-    radio.disableCRC();
-    radio.setAutoAck(false);
-    radio.setPayloadSize(19);
-    radio.openWritingPipe(addr);
-    radio.openReadingPipe(1, addr);
-    radio.startListening();
-}
-
-void RadioSetupJoin()
-{
-    RadioSetup(joinRate, joinChan, joinAddr);
-}
-
-void RadioSetupNormal()
-{
-    RadioSetup(netRate, netChan, netAddr);
-}
-
-
 typedef int report_t;
 
 
@@ -140,54 +106,44 @@ typedef struct {
 int sensors = 0;
 sensor_t *gSensor = NULL;
 
-messageType_t GetMessageType(const uint8_t msg[16])
+void SerializeSensors()
 {
-    return (messageType_t)(0x0f & (msg[0]>>4));
+    FILE *fp = fopen("sensors.bin", "wb");
+    if (fp) {
+        fwrite(&sensors, sizeof(sensors), 1, fp);
+        fwrite(gSensor, sizeof(sensor_t), sensors, fp);
+        fclose(fp);
+    }
 }
 
-int GetSequenceNum(const uint8_t msg[16])
+void DeserializeSensors()
 {
-    return (msg[0] & 0x0f);
+    FILE *fp = fopen("sensors.bin", "rb");
+    if (fp) {
+        fread(&sensors, sizeof(sensors), 1, fp);
+        gSensor = (sensor_t*)malloc(sizeof(sensor_t) * sensors);
+        fread(gSensor, sizeof(sensor_t), sensors, fp);
+        fclose(fp);
+    }
 }
+
+void DumpSensors()
+{
+    printf("%8s %-10s %-10s\n", "ID", "TYPE", "LASTREPORT");
+    time_t now = time(NULL);
+    for (int i=0; i<sensors; i++) {
+        printf("%08X %-10s %-10ld\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport);
+    }
+}
+
 
 volatile bool newJoin = 0; // external thread sets to 1 to initiate a join process
 const int joinMaxTime = 120; // # of seconds to stay in join state before returning to listener
 const int rekeyMaxTime = 120; // # of seconds to stay in join state before returning to listener
 const int sleepTimeUs = 10000; // 1/2 of a message transmission time (1/250K * 19*8) in microseconds
 
-int nextSensorID = 100; // != 0
 
-void SetMessageTypeSeq(uint8_t msg[16], messageType_t type, int seq)
-{
-    msg[0] = ((type&0xf) << 4) | (seq & 0xf);
-}
-
-
-static uint8_t lastBytes[19];
-void SendRadioMessage(uint8_t msg[16], uint8_t key[16])
-{
-    uint8_t bytes[19];
-
-    CodeMessage(bytes, msg, key);
-    memcpy(lastBytes, bytes, 19); // Squirrel away in case it's a K2SACK
-
-    radio.stopListening();
-    radio.write( bytes, 19 );
-    // TBD - listen before sending?  Check for error?
-    radio.startListening();
-}
-
-void SendRadioRawMessage(uint8_t bytes[19])
-{
-    radio.stopListening();
-    radio.write( bytes, 19 );
-    // TBD - listen before sending?  Check for error?
-    radio.startListening();
-}
-
-
-
-void SendSensorAck(sensor_t *sensor, bool enc)
+void SendSensorAck(sensor_t *sensor, bool enc, uint8_t *rawSent)
 {
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
@@ -200,7 +156,7 @@ void SendSensorAck(sensor_t *sensor, bool enc)
     outMsg[2] = ((t->tm_min&0x07)<<5) | (((t->tm_sec>>2)&0x0f)<<1) | ((year>>4)&1);
     outMsg[3] = ((year&0x0f)<<4) | ((t->tm_mon+1)&0x0f);
     outMsg[4] = ((t->tm_mday&0x1f)<<3) | ((t->tm_wday)&0x7);
-    SendRadioMessage(outMsg, enc?sensor->aesKey:NULL);
+    SendRadioMessage(outMsg, enc?sensor->aesKey:NULL, rawSent);
 }
 
 
@@ -212,7 +168,7 @@ void LogMessage(sensor_t *sensor, uint8_t *decMsg)
 
 void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
 {
-    printf("SENSOR %08x: ", sensor->id);
+    printf("SENSOR %08X: ", sensor->id);
     for (int i=0; i<13; i++) { 
         sensor->reportState[i] = decMsg[i+1];
         printf("0x%02x(%d) ", sensor->reportState[i], sensor->reportState[i]);
@@ -252,7 +208,7 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
         msg.qos = mqttQOS;
         msg.retained = 0;
         char fullTopic[128];
-        sprintf(fullTopic, "%s/%s/%08x/%s", mqttTopic, sensor->name, sensor->id, topic);
+        sprintf(fullTopic, "%s/%s/%08X/%s", mqttTopic, sensor->name, sensor->id, topic);
         printf("Publishing: '%s'='%s'\n", fullTopic, payload);
         MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
     }
@@ -343,6 +299,7 @@ void ListenerLoop()
             printf("    Good: %d, Repeat: %d, OutOfSeq: %d, Bad: %d\n", packetsGood, packetsRepeat, packetsOOS, packetsBad);
             printf("Packets Sent: %d, Resent: %d\n", packetsSent, packetsResent);
             printf("ECC corrected bits: %d\n", corrBits);
+            DumpSensors();
             printf("---------------------------------------------------------------\n");
             dumpTime = time(NULL) + 10;
         }
@@ -383,7 +340,7 @@ void ListenerLoop()
             if ( (gSensor[retrySensor].retriesLeft > 0) && (time(NULL) > gSensor[retrySensor].retryTime) ) {
                 logHex("Resend: ", gSensor[retrySensor].outMsg, 16);
                 packetsResent++;
-                SendRadioMessage(gSensor[retrySensor].outMsg, gSensor[retrySensor].joined ? gSensor[retrySensor].aesKey : NULL);
+                SendRadioMessage(gSensor[retrySensor].outMsg, gSensor[retrySensor].joined ? gSensor[retrySensor].aesKey : NULL, NULL);
                 gSensor[retrySensor].retriesLeft--;
                 gSensor[retrySensor].retryTime = time(NULL) + 1;
             }
@@ -445,7 +402,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                 SetMessageTypeSeq(sensor->outMsg, MSG_K0G, 1);
                 memcpy(sensor->outMsg+1, sensor->km, 13);
                 logHex(">REKEY-K0G : ", sensor->outMsg, 16);
-                SendRadioMessage(sensor->outMsg, sensor->aesKey);//
+                SendRadioMessage(sensor->outMsg, sensor->aesKey, NULL);
                 packetsSent++;
                 sensor->retriesLeft = 5;
                 sensor->retryTime = time(NULL) + 1;
@@ -454,7 +411,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                 packetsRepeat++;
                 logHex("Repeated Report, resending ack:", decMsg, 16);
                 // Sensor didn't see last ack, just re-send it
-                SendSensorAck(sensor, true);
+                SendSensorAck(sensor, true, NULL);
                 packetsResent++;
             } else if (sensor->lastSeqNo > GetSequenceNum(decMsg)) {
                 packetsOOS++;
@@ -464,13 +421,13 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                 if (GetMessageType(decMsg) == MSG_LOG) {
                     packetsGood++;
                     LogMessage(sensor, decMsg);
-                    SendSensorAck(sensor, true);
+                    SendSensorAck(sensor, true, NULL);
                     packetsSent++;
                 } else if (GetMessageType(decMsg) == MSG_REPORT) {
                     packetsGood++;
                     logHex(">REPORT: ", decMsg, 16);
                     UpdateSensorState(sensor, decMsg);
-                    SendSensorAck(sensor, true);
+                    SendSensorAck(sensor, true, NULL);
                     packetsSent++;
                 } else {
                     packetsBad++;
@@ -498,12 +455,12 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             sensor->joinTime = time(NULL);
             memcpy(sensor->name, decMsg+6, 8);
             sensor->name[8] = 0;
-            printf("Sensor: MAC: %08x, NAME=%s\n", sensor->id, sensor->name);
+            printf("Sensor: MAC: %08X, NAME=%s\n", sensor->id, sensor->name);
             Curve25519::dh1(sensor->km, sensor->fm);
             SetMessageTypeSeq(sensor->outMsg, MSG_K0G, 1);
             memcpy(sensor->outMsg+1, sensor->km, 13);
             logHex(">K0G : ", sensor->outMsg, 16);
-            SendRadioMessage(sensor->outMsg, NULL);
+            SendRadioMessage(sensor->outMsg, NULL, NULL);
             packetsSent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -525,7 +482,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             SetMessageTypeSeq(sensor->outMsg, MSG_K1G, 2);
             memcpy(sensor->outMsg+1, sensor->km+13, 13);
             logHex(">K1G: ", sensor->outMsg, 16);
-            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL);
+            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL, NULL);
             packetsSent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -533,7 +490,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else if (GetMessageType(decMsg) == MSG_JOIN) {
             packetsRepeat++;
             // Didn't hear my last msg, resend it and hope
-            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL);
+            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL, NULL);
             packetsResent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -561,7 +518,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             sensor->outMsg[12] = 0; //
             sensor->outMsg[13] = (netRate & 0x03);
             logHex(">K2G: ", sensor->outMsg, 16);
-            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL);
+            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL, NULL);
             packetsSent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -569,7 +526,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
         } else if (GetMessageType(decMsg) == MSG_K0S) {
             // Didn't hear my last msg, resend it and hope
             packetsRepeat++;
-            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL);
+            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL, NULL);
             packetsResent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -609,17 +566,18 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             if (Curve25519::dh2(sensor->ky, sensor->fm)) {
                 // If we can get an AES key, we're done here!  OTW this was a dud,don't add
                 if (sensor->joined) {
-                    SendSensorAck(sensor, true);
+                    uint8_t rawSent[19];
+                    SendSensorAck(sensor, true, rawSent);
                     // Store this K2S message.  If we see it again (in encrypted form, we don't
                     // keep the old key, we will resend the same ACK encoded w/the old key
                     memcpy(sensor->lastK2S, msg, 16);
-                    memcpy(sensor->lastK2SACK, lastBytes, 19);
+                    memcpy(sensor->lastK2SACK, rawSent, 19);
                 } else {
                     // This is a new sensor, so we're on join frequency and won't see any repeated requests.
                     // So spray out several ACKs in case the 1st one isn't heard (don't mind wasting power here)
                     for (int cnt=0; cnt<10; cnt++) {
                         usleep(sleepTimeUs*2);
-                        SendSensorAck(sensor, false); // Unencrypted ACK
+                        SendSensorAck(sensor, false, NULL); // Unencrypted ACK
                     }
 
                     // In the case of re-joining of an existing sensor, overwrite any internal
@@ -643,10 +601,11 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             sensor->retriesLeft = 0;
             sensor->state = WAITREPORT;
             sensor->joined = true;
+            SerializeSensors();
         } else if (GetMessageType(decMsg) == MSG_K1S) {
             // Didn't hear my last msg, resend it and hope
             packetsRepeat++;
-            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL);
+            SendRadioMessage(sensor->outMsg, sensor->joined?sensor->aesKey:NULL, NULL);
             packetsResent++;
             sensor->retriesLeft = 5;
             sensor->retryTime = time(NULL) + 1;
@@ -666,7 +625,11 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 
 int main(int argc, char** argv)
 {
+    // TODO load settings from /etc/sensy.cfg
 
+    DefineNetwork( netAddr, netChan, netRate );
+
+    DeserializeSensors();
     ListenerLoop();
 
     return 0;

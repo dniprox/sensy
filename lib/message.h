@@ -1,11 +1,23 @@
-// Message and radio defaults and handling utilities
+#ifndef _MESSAGE_H
+#define _MESSAGE_H
 
-// To join, use these hardcoded settings
-const uint32_t        joinAddr = 0xabcd12;
-const uint8_t         joinChan = 0;
-const rf24_datarate_e joinRate = RF24_250KBPS;
+// Message defaults and handling utilities
 
+typedef enum {
+    MSG_JOIN = 0,
+    MSG_K0G = 1,
+    MSG_K0S = 1,
+    MSG_K1G = 2,
+    MSG_K1S = 2,
+    MSG_K2G = 3,
+    MSG_K2S = 3,
+    MSG_REPORT = 4,
+    MSG_ACK = 4,
+    MSG_LOG = 7
+} messageType_t;
 
-typedef enum { MSG_JOIN=0, MSG_K0G, MSG_K0S, MSG_K1G, MSG_K1S, MSG_K2G, MSG_K2S, MSG_REPORT, MSG_ACK, MSG_LOG=15 } messageType_t;
+messageType_t GetMessageType(const uint8_t msg[16]);
+uint8_t GetSequenceNum(const uint8_t msg[16]);
+void SetMessageTypeSeq(uint8_t msg[16], messageType_t type, int seq);
 
-
+#endif

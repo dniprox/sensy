@@ -1,16 +1,8 @@
-//#ifdef __AVR__
-//#include <avr/interrupt.h>
-//#include <avr/power.h>
-//#include <avr/sleep.h>
-//#include <SPI.h>
-//#endif
 #include <string.h>
 
 #include "AES.h"
 #include "Curve25519.h"
 #include "RNG.h"
-//#include "RF24.h"
-//#include "rng.h"
 #include "coding.h"
 
 #ifndef __AVR__

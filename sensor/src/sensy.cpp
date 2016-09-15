@@ -16,15 +16,13 @@
 #include "../lib/coding.h"
 #include "../lib/coding.cpp"
 #include "../lib/message.h"
+#include "../lib/message.cpp"
+#include "../lib/radio.h"
+#include "../lib/radio.cpp"
 
 
 // Serial debugging enabled
 #define debug 1
-
-// Gateway will send up the real network config
-uint32_t        netAddr = 0;
-uint8_t         netChan = 0;
-rf24_datarate_e netRate = RF24_250KBPS;
 
 const uint8_t retriesJoin = 20;
 const uint8_t retriesReport = 15;
@@ -43,7 +41,7 @@ uint8_t  gwMon = 0;
 uint8_t  gwDay = 0;
 uint8_t  gwWeekday = 0;
 
-RF24 radio(7,8);
+//RF24 radio(7,8);
  
 const int mySwitch0 = 2;
 
@@ -159,37 +157,6 @@ void logHex(const char *header, const uint8_t *bytes, int cnt)
 #define logHex(a, b, c) {}
 #endif
 
-void SetMessageTypeSeq(uint8_t msg[16], uint8_t type, uint8_t seq)
-{
-    msg[0] = ((type&0xf) << 4) | (seq & 0xf);
-}
-
-uint8_t GetMessageType(const uint8_t msg[16])
-{
-    return (uint8_t)(0x0f & (msg[0]>>4));
-}
-
-
-int GetSequenceNum(const uint8_t msg[16])
-{
-    return (msg[0] & 0x0f);
-}
-
-void SendRadioMessage(uint8_t msg[16], uint8_t key[16])
-{
-    uint8_t bytes[19];
-
-    logHex(key?"AES: ":"PLAINTEXT: ",  msg, 16);
-
-    CodeMessage(bytes, msg, key);
-
-    radio.stopListening();
-    radio.write( bytes, 19 );
-    // TBD - listen before sending?  Check for error?
-    radio.startListening();
-}
-
-
 
 void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4], uint8_t name[8])
 {
@@ -204,37 +171,6 @@ void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4], uint8_t 
 }
 
 
-
-
-void RadioSetup(rf24_datarate_e rate, uint8_t channel, uint32_t addr )
-{
-    if (debug) {
-        Serial.print("RADIO rate="); Serial.println(rate);
-        Serial.print("RADIO chann="); Serial.println(channel);
-        Serial.print("RADIO addr="); Serial.println(addr, HEX);
-    }
-    radio.stopListening();
-    radio.setPALevel(RF24_PA_MAX);  // Always yell
-    radio.setDataRate(rate);
-    radio.setAddressWidth(3);       // Always 3
-    radio.setChannel(channel);
-    radio.disableCRC();
-    radio.setAutoAck(false);
-    radio.setPayloadSize(19);
-    radio.openWritingPipe(addr);
-    radio.openReadingPipe(1, addr);
-    radio.startListening();
-}
-
-void RadioSetupJoin()
-{
-    RadioSetup(joinRate, joinChan, joinAddr);
-}
-
-void RadioSetupNormal()
-{
-    RadioSetup(netRate, netChan, netAddr);
-}
 
 void PowerSensors(bool powered);
 bool CheckSensors();
@@ -291,10 +227,6 @@ void ZZZ(uint16_t secs)
     // Reset entropy WDT
     RandSetup();
     RandEnable(oldRand);
-
-    // Reset the radio registers
-    radio.begin();
-    RadioSetupNormal();
 }
 
 const int16_t sampleDelay = 10;;
@@ -481,7 +413,7 @@ SENDJOIN:
         logHex("Sending JOIN: ", msg, 16);
        
         radio.powerUp();
-        SendRadioMessage(msg, aesPtr);
+        SendRadioMessage(msg, aesPtr, NULL);
        
         // Wait for timeout then resend if nothing comes back
         timeoutDelay = 1000L + RandGet();
@@ -525,7 +457,7 @@ SENDJOIN:
 SENDK0S:
         ClockNormal();
         logHex("Sending K0S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr);
+        SendRadioMessage(msg, aesPtr, NULL);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         now = millis();
@@ -567,7 +499,7 @@ SENDK0S:
 SENDK1S:
         ClockNormal();
         logHex("Sending K1S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr);
+        SendRadioMessage(msg, aesPtr, NULL);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         now = millis();
@@ -614,7 +546,7 @@ SENDK1S:
 SENDK2S:
         ClockNormal();
         logHex("Sending K2S: ", msg, 16);
-        SendRadioMessage(msg, aesPtr);
+        SendRadioMessage(msg, aesPtr, NULL);
         ClockSlow();
         timeout = FromNowMS(timeoutDelay);
         while (millis() < timeout) {
@@ -668,7 +600,7 @@ SENDREPORT:
         ClockNormal();
         UpdateReportMsg(msg);
         logHex("Sending report: ", msg, 16);
-        SendRadioMessage(msg, aesKey);
+        SendRadioMessage(msg, aesKey, NULL);
         ClockSlow();
         // For IRQ (state changes) we want to send this ASAP, let other check-ins back off for us
         timeout = FromNowMS(irq?timeoutDelay/10:timeoutDelay);
@@ -699,7 +631,7 @@ SENDREPORT:
         }
         radio.powerDown();
         seqNo++;
-        if (seqNo>15) {
+        if (seqNo>31) {
             if (debug) Serial.println("Starting rekey, generating new secrets");
             // Need to rekey, using current AES key
             aesPtr = aesKey;

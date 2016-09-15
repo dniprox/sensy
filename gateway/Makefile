@@ -9,11 +9,15 @@ INCLUDES=-I$(RF24) -I$(CRYPTO) -I$(LIBDIR)
 
 all: gateway
 
-SRC=gateway.cpp RNG-linux.cpp ../lib/coding.cpp $(CRYPTO)/Curve25519.cpp $(CRYPTO)/BigNumberUtil.cpp $(CRYPTO)/AES128.cpp $(CRYPTO)/AESCommon.cpp $(CRYPTO)/BlockCipher.cpp $(CRYPTO)/Crypto.cpp $(RF24)/RF24.cpp
+SRC=gateway.cpp RNG-linux.cpp ../lib/coding.cpp ../lib/message.cpp ../lib/radio.cpp $(CRYPTO)/Curve25519.cpp $(CRYPTO)/BigNumberUtil.cpp $(CRYPTO)/AES128.cpp $(CRYPTO)/AESCommon.cpp $(CRYPTO)/BlockCipher.cpp $(CRYPTO)/Crypto.cpp $(RF24)/RF24.cpp
+
 OBJ=$(SRC:.cpp=.o)
 
 gateway: $(OBJ)
 	$(CC) $(GCCOPTS) $(INCLUDES) -o gateway $(OBJ) -lpthread -lrf24-bcm -lpaho-mqtt3c
+
+clean:
+	rm -f gateway $(OBJ)
 
 .SUFFIXES: .cpp
 
