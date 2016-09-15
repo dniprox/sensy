@@ -4,7 +4,6 @@
 #include <string>
 #include <unistd.h>
 #include <pthread.h>
-#include <termios.h>
 #include <MQTTClient.h>
 #include "RF24.h"
 #include "AES.h"
@@ -13,6 +12,7 @@
 #include "coding.h"
 #include "message.h"
 #include "radio.h"
+#include "web.h"
 
 // My network 
 static uint32_t        netAddr = 0x21dcba;
@@ -244,36 +244,9 @@ bool HandleSensor(uint8_t rawMsg[16], sensor_t *sensor);
 time_t joinTimeout = 0;
 
 
-bool inputAvailable()  
-{
-  struct timeval tv;
-  fd_set fds;
-  tv.tv_sec = 0;
-  tv.tv_usec = 0;
-  FD_ZERO(&fds);
-  FD_SET(STDIN_FILENO, &fds);
-  select(STDIN_FILENO+1, &fds, NULL, NULL, &tv);
-  return (FD_ISSET(0, &fds));
-}
-
-int getch(void) {
-    if (!inputAvailable()) return 0;
-    struct termios oldattr, newattr;
-    int ch;
-    tcgetattr( STDIN_FILENO, &oldattr );
-    newattr = oldattr;
-    newattr.c_lflag &= ~( ICANON | ECHO );
-    tcsetattr( STDIN_FILENO, TCSANOW, &newattr );
-    ch = getchar();
-    tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
-    return ch;
-}
-
 void ListenerLoop()
 {
     uint8_t rawMsg[19], msg[16];
-
-    time_t dumpTime = time(NULL)+10;
 
     int retrySensor = 0;
 
@@ -286,24 +259,6 @@ void ListenerLoop()
     newJoin = false;
 
     while (1) {
-
-        if (getch() == 'j') {
-            printf("JOIN REQUESTED\n");
-            newJoin = true;
-        }
-
-        if (time(NULL) > dumpTime) {
-            printf("---------------------------------------------------------------\n");
-            printf("Mode: %s - now = %ld jointimeout = (%ld)\n", joinTimeout?"JOIN":"NORMAL", time(NULL), joinTimeout);
-            printf("Packets Received: %d\n", packetsRec);
-            printf("    Good: %d, Repeat: %d, OutOfSeq: %d, Bad: %d\n", packetsGood, packetsRepeat, packetsOOS, packetsBad);
-            printf("Packets Sent: %d, Resent: %d\n", packetsSent, packetsResent);
-            printf("ECC corrected bits: %d\n", corrBits);
-            DumpSensors();
-            printf("---------------------------------------------------------------\n");
-            dumpTime = time(NULL) + 10;
-        }
-
         // If we've gone past the timeout period for JOIN operation, cancel and revert to normal ops
         if (joinTimeout) {
             if (time(NULL) > joinTimeout) {
@@ -622,14 +577,61 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 }
 
 
+bool WebStatus(const char *uri, char **output)
+{
+    // Only handle main page for now
+    if (strcmp(uri, "/") && strcmp(uri, "/index.html") && strcmp(uri, "index.html") && strcmp(uri, "/join.html"))
+        return false;
+
+    if (!strcmp(uri, "/join.html")) {
+        newJoin = true;
+        // Redirect to main page
+        *output = strdup("<html><head><title>Join Enabled</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
+        return true;
+    }
+
+    char *buff = (char*)malloc(65536);
+    if (!buff) return false;
+
+    buff[0] = 0;
+    char line[8192];
+    strcat(buff, "<html>\n");
+    sprintf(line, "<head><meta http-equiv=\"refresh\" content=\"10\"><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
+    strcat(buff, line);
+    strcat(buff, "<body>\n");
+    strcat(buff, "<form action=\"join.html\"><input type=\"submit\" value=\"Join\" /></form>");
+    strcat(buff, "<h1>Statistics</h1>\n");
+    sprintf(line, "Mode: %s<br>\n", joinTimeout?"JOIN":"NORMAL");
+    strcat(buff, line);
+    sprintf(line, "Packets Received: %d (Good: %d, Repeat: %d, OutOfSeq: %d, Bad: %d)<br>\n",
+                  packetsRec, packetsGood, packetsRepeat, packetsOOS, packetsBad);
+    strcat(buff, line);
+    sprintf(line, "Packets Sent: %d, Resent: %d<br>\n", packetsSent, packetsResent);
+    strcat(buff, line);
+    sprintf(line, "ECC corrected bits: %d<br><br>\n", corrBits);
+    strcat(buff, line);
+    strcat(buff, "<h1>Sensors</h1>\n");
+    strcat(buff, "<table border=\"1\"><tr><th>ID</th><th>TYPE</th><th>LAST REPORT</th></tr>\n");
+    time_t now = time(NULL);
+    for (int i=0; i<sensors; i++) {
+        sprintf(line, "<tr><td>%08X</td><td>%10s</td><td>%10ld</td></tr>\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport);
+        strcat(buff, line);
+    }
+    strcat(buff, "</table></body></html>\n");
+
+    *output = buff;
+    return true;
+}
 
 int main(int argc, char** argv)
 {
     // TODO load settings from /etc/sensy.cfg
 
     DefineNetwork( netAddr, netChan, netRate );
-
     DeserializeSensors();
+
+    StartWebserver(1000, WebStatus);
+
     ListenerLoop();
 
     return 0;
