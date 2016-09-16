@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <MQTTClient.h>
+#include <json-c/json.h>
 #include "RF24.h"
 #include "AES.h"
 #include "Curve25519.h"
@@ -91,6 +92,7 @@ typedef struct {
     int      reportEntries;
     report_t reportType[13];  // What fields we have
     uint8_t  reportState[13];   // The raw data
+    uint32_t reportCount; // Number of reports we've heard since joining
 
     int     lastSeqNo;      // Last sequence number we received
     uint8_t lastRecvMessage[16]; // Last message to come in from the sensor
@@ -98,44 +100,145 @@ typedef struct {
     time_t  lastRetryTime;       // When we last resent it
     int     retriesLeft;         // If any retries left
 
-
     uint8_t fm[32], km[32], ky[32];
     uint8_t outMsg[16];
 } sensor_t;
 
 int sensors = 0;
 sensor_t *gSensor = NULL;
+pthread_mutex_t mutexSensor = PTHREAD_MUTEX_INITIALIZER; 
+
+const char *hexstring(uint8_t *p, int c)
+{
+    static char s[512]; // 256 char limit
+    if (c>256) return NULL; // Should SEGV app if we go rogue
+    for (int i=0; i<c; i++) {
+        sprintf(s+i*2, "%02X", p[i]);
+    }
+    return s;
+}
+
+bool parsehex(const char *s, int c, uint8_t *d)
+{
+    if ((int)strlen(s) != (int)(2*c)) return false; // Source string wrong length
+    for (int i=0; i<c; i++) {
+       char z[3];
+       z[0] = s[i*2]; z[1] = s[1+i*2]; z[2] = 0;
+       int q;
+       if (sscanf(z, "%x", &q) != 1) return false; //invalid hex digit
+       d[i] = (uint8_t)q;
+    }
+    return true;
+}
+
 
 void SerializeSensors()
 {
-    FILE *fp = fopen("sensors.bin", "wb");
+    FILE *fp = fopen("sensors.json", "w");
     if (fp) {
-        fwrite(&sensors, sizeof(sensors), 1, fp);
-        fwrite(gSensor, sizeof(sensor_t), sensors, fp);
+        json_object *jsonSensors = json_object_new_array();
+        for (int i=0; i<sensors; i++) {
+            if (!gSensor[i].joined) return; // Non-joined sensor, nothing to save yet
+            json_object *jsonSensor = json_object_new_object();
+            char buff[16];
+            sprintf(buff, "%08X", gSensor[i].id);
+            json_object_object_add(jsonSensor, "id", json_object_new_string(buff));
+            json_object_object_add(jsonSensor, "name", json_object_new_string(gSensor[i].name));
+            json_object_object_add(jsonSensor, "aesKey", json_object_new_string(hexstring(gSensor[i].aesKey, 16)));
+            json_object_object_add(jsonSensor, "joinTime", json_object_new_int(gSensor[i].joinTime));
+            json_object_object_add(jsonSensor, "reportCount", json_object_new_int(gSensor[i].reportCount));
+            json_object_object_add(jsonSensor, "reportEntries", json_object_new_int(gSensor[i].reportEntries));
+            json_object *arr = json_object_new_array();
+            for (int j=0; j<gSensor[i].reportEntries; j++) {
+                json_object_array_add(arr, json_object_new_int(gSensor[i].reportType[j]));
+            }
+            json_object_object_add(jsonSensor, "reportType", arr);
+            json_object_array_add(jsonSensors, jsonSensor);
+        }
+        json_object *jsonTop = json_object_new_object();
+        json_object_object_add(jsonTop, "sensor", jsonSensors);
+        fprintf(fp, "%s", json_object_to_json_string(jsonTop));
+        json_object_put(jsonTop); // Free it all
         fclose(fp);
     }
 }
 
 void DeserializeSensors()
 {
-    FILE *fp = fopen("sensors.bin", "rb");
+    FILE *fp = fopen("sensors.json", "r");
+    sensors = 0;
+    if (gSensor) free(gSensor);
+    gSensor = NULL;
+
     if (fp) {
-        fread(&sensors, sizeof(sensors), 1, fp);
-        gSensor = (sensor_t*)malloc(sizeof(sensor_t) * sensors);
-        fread(gSensor, sizeof(sensor_t), sensors, fp);
+        long len;
+        fseek(fp, 0, SEEK_END);
+        len = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        char *json = (char*)malloc(len+1);
+        if (!json) { fclose(fp); return; }
+        fread(json, 1, len, fp);
         fclose(fp);
+        json[len] = 0;
+
+        json_object *config = json_tokener_parse(json);
+        json_object *sensorsAry;
+        if (!json_object_object_get_ex(config, "sensor", &sensorsAry)) {
+            printf("Missing sensors array in JSON\n");
+            return;
+        }
+        if (!json_object_is_type(sensorsAry, json_type_array)) { 
+            // Error!
+            printf("Configuration file invalid, unable to parse.\n");
+            json_object_put(config);
+            return;
+        }
+        int cnt = json_object_array_length(sensorsAry);
+        for (int i=0; i<cnt; i++) {
+            json_object *s = json_object_array_get_idx(sensorsAry, i);
+            sensor_t n;
+            memset(&n, 0, sizeof(n));
+            n.state = WAITREPORT;
+            n.joined = true;
+            json_object *jsonID;
+            if (!json_object_object_get_ex(s, "id", &jsonID)) {
+                printf("Missing sensor ID\n");
+                continue;
+            }
+            if (sscanf(json_object_get_string(jsonID), "%x", &n.id) != 1) continue;
+            json_object *jsonName;
+            if (!json_object_object_get_ex(s, "name", &jsonName)) continue;
+            strncpy(n.name, json_object_get_string(jsonName), sizeof(n.name));
+            n.name[sizeof(n.name)-1] = 0;
+            json_object *jsonAES;
+            if (!json_object_object_get_ex(s, "aesKey", &jsonAES)) continue;
+            if (!parsehex(json_object_get_string(jsonAES), 16, n.aesKey)) continue;
+            json_object *jsonJoin;
+            if (!json_object_object_get_ex(s, "joinTime", &jsonJoin)) continue;
+            if (sscanf(json_object_get_string(jsonJoin), "%ld", &n.joinTime) != 1) continue;
+            json_object *jsonCnt;
+            if (!json_object_object_get_ex(s, "reportCount", &jsonCnt)) continue;
+            if (sscanf(json_object_get_string(jsonCnt), "%d", &n.reportCount) != 1) continue;
+            json_object *jsonRE;
+            if (!json_object_object_get_ex(s, "reportEntries", &jsonRE)) continue;
+            if (sscanf(json_object_get_string(jsonRE), "%d", &n.reportEntries) != 1) continue;
+            json_object *r;
+            if (!json_object_object_get_ex(s, "reportType", &r)) continue;
+            if (!json_object_is_type(r, json_type_array)) continue;
+            int cnt = json_object_array_length(r);
+            if ((cnt != n.reportEntries) || (cnt > 12)) continue;
+            for (int j=0; j<cnt; j++) {
+                json_object *q = json_object_array_get_idx(r, j);
+                if (!json_object_is_type(q, json_type_int)) continue;
+                n.reportType[j] = json_object_get_int(q);
+            }
+            sensors++;
+            gSensor=(sensor_t*)realloc(gSensor, sizeof(sensor_t)*sensors);
+            memcpy(&gSensor[sensors-1], &n, sizeof(sensor_t));
+        }
+        json_object_put(config);
     }
 }
-
-void DumpSensors()
-{
-    printf("%8s %-10s %-10s\n", "ID", "TYPE", "LASTREPORT");
-    time_t now = time(NULL);
-    for (int i=0; i<sensors; i++) {
-        printf("%08X %-10s %-10ld\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport);
-    }
-}
-
 
 volatile bool newJoin = 0; // external thread sets to 1 to initiate a join process
 const int joinMaxTime = 120; // # of seconds to stay in join state before returning to listener
@@ -231,15 +334,15 @@ void logHex(const char *str, uint8_t *b, int c)
 
 bool HandleSensor(uint8_t rawMsg[16], sensor_t *sensor);
 
-    // Statistics
-    uint32_t corrBits = 0; // Total # of corrected bits for all time
-    uint32_t packetsRec =  0; // Total # of packets seen by radio.read()
-    uint32_t packetsGood = 0; // # that were successfully processed
-    uint32_t packetsRepeat = 0; // # that were repeats of prior sequence #s
-    uint32_t packetsOOS = 0; // # that were out of sequence
-    uint32_t packetsBad = 0; // # that were not able to be processed
-    uint32_t packetsSent = 0; // # packets GW transmitted initially
-    uint32_t packetsResent = 0; // # packets GW re-transmitted (not including Sent above)
+// Statistics
+uint32_t corrBits = 0; // Total # of corrected bits for all time
+uint32_t packetsRec =  0; // Total # of packets seen by radio.read()
+uint32_t packetsGood = 0; // # that were successfully processed
+uint32_t packetsRepeat = 0; // # that were repeats of prior sequence #s
+uint32_t packetsOOS = 0; // # that were out of sequence
+uint32_t packetsBad = 0; // # that were not able to be processed
+uint32_t packetsSent = 0; // # packets GW transmitted initially
+uint32_t packetsResent = 0; // # packets GW re-transmitted (not including Sent above)
 
 time_t joinTimeout = 0;
 
@@ -247,24 +350,34 @@ time_t joinTimeout = 0;
 void ListenerLoop()
 {
     uint8_t rawMsg[19], msg[16];
-
     int retrySensor = 0;
+    time_t serializeTimeout;
 
     MQTTInit();
-
 
     radio.begin();
     RadioSetupNormal(); // Radio set to proper operational channel/etc.
 
     newJoin = false;
+    serializeTimeout = time(NULL) + 3600; // Dump state once an hour
 
     while (1) {
+
+        if (time(NULL) > serializeTimeout) {
+           pthread_mutex_lock( &mutexSensor );
+           SerializeSensors();
+           pthread_mutex_unlock( &mutexSensor );
+           serializeTimeout = time(NULL) + 3600; // Dump state once an hour
+        }
+
         // If we've gone past the timeout period for JOIN operation, cancel and revert to normal ops
         if (joinTimeout) {
             if (time(NULL) > joinTimeout) {
                 RadioSetupNormal();
                 joinTimeout = 0;
+                pthread_mutex_lock( &mutexSensor );
                 sensors--;
+                pthread_mutex_unlock( &mutexSensor );
                 continue; // Go back to the loop with new state, short-circuit
             }
         }
@@ -280,11 +393,13 @@ void ListenerLoop()
                 // Add empty sensor at end of list for this...
                 newJoin = false;
                 RadioSetupJoin();
+                pthread_mutex_lock( &mutexSensor );
                 gSensor = (sensor_t*)realloc(gSensor, sizeof(sensor_t)*(++sensors));
                 memset(&gSensor[sensors-1], 0, sizeof(sensor_t));
                 gSensor[sensors-1].joined = false;
                 gSensor[sensors-1].state = WAITJOIN;
                 joinTimeout = time(NULL) + joinMaxTime;
+                pthread_mutex_unlock( &mutexSensor );
                 continue;
             }
         }
@@ -296,8 +411,10 @@ void ListenerLoop()
                 logHex("Resend: ", gSensor[retrySensor].outMsg, 16);
                 packetsResent++;
                 SendRadioMessage(gSensor[retrySensor].outMsg, gSensor[retrySensor].joined ? gSensor[retrySensor].aesKey : NULL, NULL);
+                pthread_mutex_lock( &mutexSensor );
                 gSensor[retrySensor].retriesLeft--;
                 gSensor[retrySensor].retryTime = time(NULL) + 1;
+                pthread_mutex_unlock( &mutexSensor );
             }
             usleep(sleepTimeUs);
             continue;
@@ -315,11 +432,13 @@ void ListenerLoop()
         bool handled = false;
         for (int i=0; (!handled) && (i < sensors); i++) {
             // Anyone got this?
+            pthread_mutex_lock( &mutexSensor );
             if (HandleSensor(msg, &gSensor[i])) {
                 corrBits += corr;
                 gSensor[i].lastReport = time(NULL);
                 handled = true;
             }
+            pthread_mutex_unlock( &mutexSensor );
         }
         if (!handled) {
             // Nobody got it.  Sounds like garbage to me...
@@ -384,6 +503,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     UpdateSensorState(sensor, decMsg);
                     SendSensorAck(sensor, true, NULL);
                     packetsSent++;
+                    sensor->reportCount++;
                 } else {
                     packetsBad++;
                     logHex("Unexpected in WAITREPORT: ", decMsg, 16);
@@ -580,55 +700,99 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 bool WebStatus(const char *uri, char **output)
 {
     // Only handle main page for now
-    if (strcmp(uri, "/") && strcmp(uri, "/index.html") && strcmp(uri, "index.html") && strcmp(uri, "/join.html"))
-        return false;
+    if (!strcmp(uri, "/") || !strcmp(uri, "/index.html") || !strcmp(uri, "index.html")) {
+        char *buff = (char*)malloc(65536);
+        if (!buff) return false;
 
-    if (!strcmp(uri, "/join.html")) {
+        buff[0] = 0;
+        char line[8192];
+        strcat(buff, "<html>\n");
+        sprintf(line, "<head><meta http-equiv=\"refresh\" content=\"10\"><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
+        strcat(buff, line);
+        strcat(buff, "<body>\n");
+        strcat(buff, "<form action=\"join.html\"><input type=\"submit\" value=\"Join\" /></form>");
+        strcat(buff, "<h1>Statistics</h1>\n");
+        sprintf(line, "Mode: %s<br>\n", joinTimeout?"JOIN":"NORMAL");
+        strcat(buff, line);
+        sprintf(line, "Packets Received: %d (Good: %d, Repeat: %d, OutOfSeq: %d, Bad: %d)<br>\n",
+                      packetsRec, packetsGood, packetsRepeat, packetsOOS, packetsBad);
+        strcat(buff, line);
+        sprintf(line, "Packets Sent: %d, Resent: %d<br>\n", packetsSent, packetsResent);
+        strcat(buff, line);
+        sprintf(line, "ECC corrected bits: %d<br><br>\n", corrBits);
+        strcat(buff, line);
+        strcat(buff, "<h1>Sensors</h1>\n");
+        strcat(buff, "<table border=\"1\"><tr><th>ID</th><th>TYPE</th><th>LAST REPORT</th><th>TOTAL REPORTS</th><th>&nbsp;</th></tr>\n");
+        time_t now = time(NULL);
+        pthread_mutex_lock( &mutexSensor );
+        for (int i=0; i<sensors; i++) {
+            if (!gSensor[i].joined) continue;
+            sprintf(line, "<tr><td>%08X</td><td>%s</td><td>%ld</td><td>%u</td><td><form action=\"lastchance.html-id=%08X\"><input type=\"submit\" value=\"Remove\" /></form></tr>\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport, gSensor[i].reportCount, gSensor[i].id);
+            strcat(buff, line);
+        }
+        pthread_mutex_unlock( &mutexSensor );
+        strcat(buff, "</table></body></html>\n");
+
+        *output = buff;
+        return true;
+    } else if (!strcmp(uri, "/join.html")) {
         newJoin = true;
         // Redirect to main page
         *output = strdup("<html><head><title>Join Enabled</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
         return true;
-    }
+    } else if (!strncmp(uri, "/lastchance.html-id=", 19)) {
+        uint32_t id;
+        if (sscanf(uri, "/lastchance.html-id=%x", &id) != 1) {
+            return false;
+        }
 
-    char *buff = (char*)malloc(65536);
-    if (!buff) return false;
+        char *buff = (char*)malloc(65536);
+        if (!buff) return false;
+        buff[0] = 0;
 
-    buff[0] = 0;
-    char line[8192];
-    strcat(buff, "<html>\n");
-    sprintf(line, "<head><meta http-equiv=\"refresh\" content=\"10\"><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
-    strcat(buff, line);
-    strcat(buff, "<body>\n");
-    strcat(buff, "<form action=\"join.html\"><input type=\"submit\" value=\"Join\" /></form>");
-    strcat(buff, "<h1>Statistics</h1>\n");
-    sprintf(line, "Mode: %s<br>\n", joinTimeout?"JOIN":"NORMAL");
-    strcat(buff, line);
-    sprintf(line, "Packets Received: %d (Good: %d, Repeat: %d, OutOfSeq: %d, Bad: %d)<br>\n",
-                  packetsRec, packetsGood, packetsRepeat, packetsOOS, packetsBad);
-    strcat(buff, line);
-    sprintf(line, "Packets Sent: %d, Resent: %d<br>\n", packetsSent, packetsResent);
-    strcat(buff, line);
-    sprintf(line, "ECC corrected bits: %d<br><br>\n", corrBits);
-    strcat(buff, line);
-    strcat(buff, "<h1>Sensors</h1>\n");
-    strcat(buff, "<table border=\"1\"><tr><th>ID</th><th>TYPE</th><th>LAST REPORT</th></tr>\n");
-    time_t now = time(NULL);
-    for (int i=0; i<sensors; i++) {
-        sprintf(line, "<tr><td>%08X</td><td>%10s</td><td>%10ld</td></tr>\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport);
+        char line[8192];
+        strcat(buff, "<html>\n");
+        sprintf(line, "<head><meta http-equiv=\"refresh\" content=\"10\"><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
         strcat(buff, line);
+        strcat(buff, "<body>\n");
+        sprintf(line, "Do you really want to remove sensor %08X?<br>\n", id);
+        strcat(buff, line);
+        sprintf(line, "<table><tr><td><form action=\"remove.html-id=%08X\"><input type=\"submit\" value=\"Yes\" /></form></td>", id);
+        strcat(buff, line);
+        sprintf(line, "<td><form action=\"index.html\"><input type=\"submit\" value=\"No\" /></form></td></tr></table><br>\n");
+        strcat(buff, line);
+        strcat(buff, "</table></body></html>\n");
+        
+        *output = buff;
+        return true;
+    } else if (!strncmp(uri, "/remove.html-id=", 15)) {
+        uint32_t id;
+        if (sscanf(uri, "/remove.html-id=%x", &id) != 1) {
+            return false;
+        }
+        pthread_mutex_lock( &mutexSensor );
+        int j=0;
+	for (int i=0; i<sensors; i++) {
+            if (gSensor[i].id!=id) { j++; }
+            else {
+                sensors--;
+                memcpy(&gSensor[j], &gSensor[i+1], sizeof(sensor_t)*sensors);
+            }
+        }
+        pthread_mutex_unlock( &mutexSensor );
+        *output = strdup("<html><head><title>Join Enabled</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
+        return true;
+    } else {
+        return false;
     }
-    strcat(buff, "</table></body></html>\n");
-
-    *output = buff;
-    return true;
 }
-
 int main(int argc, char** argv)
 {
     // TODO load settings from /etc/sensy.cfg
 
     DefineNetwork( netAddr, netChan, netRate );
     DeserializeSensors();
+    SerializeSensors();
 
     StartWebserver(1000, WebStatus);
 

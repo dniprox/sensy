@@ -14,7 +14,7 @@ SRC=gateway.cpp RNG-linux.cpp web.cpp ../lib/coding.cpp ../lib/message.cpp ../li
 OBJ=$(SRC:.cpp=.o)
 
 gateway: $(OBJ)
-	$(CC) $(GCCOPTS) $(INCLUDES) -o gateway $(OBJ) -lpthread -lrf24-bcm -lpaho-mqtt3c
+	$(CC) $(GCCOPTS) $(INCLUDES) -o gateway $(OBJ) -lpthread -lrf24-bcm -lpaho-mqtt3c -ljson-c
 
 clean:
 	rm -f gateway $(OBJ)
