@@ -1,5 +1,5 @@
 LIBDIR=../lib
-CCFLAGS=-g -Wall
+CCFLAGS=-g -Wall -pedantic
 CC=g++
 LDFLAGS=-g
 RF24=$(LIBDIR)/RF24

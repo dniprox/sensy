@@ -218,7 +218,7 @@ void DeserializeSensors()
             if (sscanf(json_object_get_string(jsonJoin), "%ld", &n.joinTime) != 1) continue;
             json_object *jsonCnt;
             if (!json_object_object_get_ex(s, "reportCount", &jsonCnt)) continue;
-            if (sscanf(json_object_get_string(jsonCnt), "%d", &n.reportCount) != 1) continue;
+            if (sscanf(json_object_get_string(jsonCnt), "%ud", &n.reportCount) != 1) continue;
             json_object *jsonRE;
             if (!json_object_object_get_ex(s, "reportEntries", &jsonRE)) continue;
             if (sscanf(json_object_get_string(jsonRE), "%d", &n.reportEntries) != 1) continue;
