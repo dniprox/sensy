@@ -88,6 +88,7 @@ typedef struct {
     time_t  joinTime;
     time_t  lastReport;
     time_t  retryTime;
+    int     retriesLeft;         // If any retries left
 
     int      reportEntries;
     report_t reportType[13];  // What fields we have
@@ -95,12 +96,9 @@ typedef struct {
     uint32_t reportCount; // Number of reports we've heard since joining
 
     int     lastSeqNo;      // Last sequence number we received
-    uint8_t lastRecvMessage[16]; // Last message to come in from the sensor
-    uint8_t outMessage[16];      // Message to sensor
-    time_t  lastRetryTime;       // When we last resent it
-    int     retriesLeft;         // If any retries left
 
     uint8_t fm[32], km[32], ky[32];
+
     uint8_t outMsg[16];
 } sensor_t;
 
@@ -124,7 +122,7 @@ bool parsehex(const char *s, int c, uint8_t *d)
     for (int i=0; i<c; i++) {
        char z[3];
        z[0] = s[i*2]; z[1] = s[1+i*2]; z[2] = 0;
-       int q;
+       unsigned int q;
        if (sscanf(z, "%x", &q) != 1) return false; //invalid hex digit
        d[i] = (uint8_t)q;
     }
@@ -226,7 +224,7 @@ void DeserializeSensors()
             if (!json_object_object_get_ex(s, "reportType", &r)) continue;
             if (!json_object_is_type(r, json_type_array)) continue;
             int cnt = json_object_array_length(r);
-            if ((cnt != n.reportEntries) || (cnt > 12)) continue;
+            if ((cnt != n.reportEntries) || (cnt > 13)) continue;
             for (int j=0; j<cnt; j++) {
                 json_object *q = json_object_array_get_idx(r, j);
                 if (!json_object_is_type(q, json_type_int)) continue;

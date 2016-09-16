@@ -117,21 +117,21 @@ static void *WebserverThread(void *ptr)
 
         if (authUser) { // Check authentication...use pound SSL proxy, this is basic realm!
             if (!auth[0]) {
-                WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"", "Login required.");
+                WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"\r\n", "Login required.");
                 fclose(fp);
                 close(fd);
                 continue;
             } else {
                 char b64[8192];
                 if (sscanf(auth, "Authorization: Basic %s", b64)!=1) {
-                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"", "Invalid login.");
+                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"\r\n", "Invalid login.");
                     fclose(fp);
                     close(fd);
                     continue;
                 }
                 char *decode = Base64Decode(b64);
                 if (!decode) {
-                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"", "Invalid login.");
+                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"\r\n", "Invalid login.");
                     fclose(fp);
                     close(fd);
                     continue;
@@ -142,7 +142,7 @@ static void *WebserverThread(void *ptr)
                 char *pass = decode+1;
                 if (strcmp(user, authUser) || strcmp(pass, authPass)) {
                     free(user);
-                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"", "Invalid login.");
+                    WebError(fp, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"Sensy\"\r\n", "Invalid login.");
                     fclose(fp);
                     close(fd);
                     continue;
@@ -151,12 +151,10 @@ static void *WebserverThread(void *ptr)
                 // Authorized
             }
         }
-
         char *output = NULL;
         bool handled = false;
         if (requestHandler)
             handled = requestHandler(uri, &output);
-
         if (!handled || !output) {
             WebError(fp, "404 Not Found", NULL, "The requested resource was not found.");
         } else {
