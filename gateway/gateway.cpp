@@ -700,7 +700,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
 bool WebStatus(const char *uri, char **output)
 {
     // Only handle main page for now
-    if (!strcmp(uri, "/") || !strcmp(uri, "/index.html") || !strcmp(uri, "index.html")) {
+    if (!strcmp(uri, "/") || !strcmp(uri, "/index.html") || !strcmp(uri, "index.html") || !strcmp(uri, "/index.html?")) {
         char *buff = (char*)malloc(65536);
         if (!buff) return false;
 
@@ -794,7 +794,7 @@ int main(int argc, char** argv)
     DeserializeSensors();
     SerializeSensors();
 
-    StartWebserver(1000, WebStatus);
+    StartWebserver(1000, WebStatus, "admin", "admin"); // TODO - from config
 
     ListenerLoop();
 
