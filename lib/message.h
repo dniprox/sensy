@@ -19,5 +19,6 @@ typedef enum {
 messageType_t GetMessageType(const uint8_t msg[16]);
 uint8_t GetSequenceNum(const uint8_t msg[16]);
 void SetMessageTypeSeq(uint8_t msg[16], messageType_t type, int seq);
+uint32_t GetSensorID(uint8_t *msg);
 
 #endif

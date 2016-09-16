@@ -14,6 +14,7 @@
 #include "message.h"
 #include "radio.h"
 #include "web.h"
+#include "sensor.h"
 
 // My network 
 static uint32_t        netAddr = 0x21dcba;
@@ -26,6 +27,15 @@ const char *mqttID = "sensy";
 const char *mqttTopic = "sensy1";
 int mqttQOS = 2;
 long mqttTimeout = 10000;
+
+MQTTClient mqtt;
+MQTTClient_message mqttMsg = MQTTClient_message_initializer;
+MQTTClient_deliveryToken mqttToken;
+
+// Known sensors
+int sensors = 0;
+sensor_t *gSensor = NULL;
+pthread_mutex_t mutexSensor = PTHREAD_MUTEX_INITIALIZER; 
 
 
 void MQTTDelivered(void *ctx, MQTTClient_deliveryToken dt)
@@ -46,9 +56,6 @@ void MQTTDisconnect(void *ctx, char *cause)
     printf("ERROR: Disconnected from MQTT, cause='%s'\n", cause);
 }
 
-MQTTClient mqtt;
-MQTTClient_message mqttMsg = MQTTClient_message_initializer;
-MQTTClient_deliveryToken mqttToken;
 
 void MQTTInit()
 {
@@ -68,47 +75,10 @@ void MQTTInit()
     }
 }
 
-
-
-typedef int report_t;
-
-
-typedef enum { WAITJOIN, WAITK0S, WAITK1S, WAITK2S, WAITREPORT } state_t;
-typedef struct {
-    bool joined;
-    state_t state;
-    uint32_t     id;
-    char    name[10];
-
-    uint8_t aesKey[16];
-
-    uint8_t lastK2S[16]; // Last receive K2S to check if we re-hear it (they didn't hear our ACK)
-    uint8_t lastK2SACK[19]; // if we need to resend the last ACK to a K2S
-
-    time_t  joinTime;
-    time_t  lastReport;
-    time_t  retryTime;
-    int     retriesLeft;         // If any retries left
-
-    int      reportEntries;
-    report_t reportType[13];  // What fields we have
-    uint8_t  reportState[13];   // The raw data
-    uint32_t reportCount; // Number of reports we've heard since joining
-
-    int     lastSeqNo;      // Last sequence number we received
-
-    uint8_t fm[32], km[32], ky[32];
-
-    uint8_t outMsg[16];
-} sensor_t;
-
-int sensors = 0;
-sensor_t *gSensor = NULL;
-pthread_mutex_t mutexSensor = PTHREAD_MUTEX_INITIALIZER; 
-
-const char *hexstring(uint8_t *p, int c)
+// Convert byte array to hex string, easier to parse than b64
+const char *HexString(uint8_t *p, int c)
 {
-    static char s[512]; // 256 char limit
+    static char s[513]; // 256 char limit
     if (c>256) return NULL; // Should SEGV app if we go rogue
     for (int i=0; i<c; i++) {
         sprintf(s+i*2, "%02X", p[i]);
@@ -116,7 +86,8 @@ const char *hexstring(uint8_t *p, int c)
     return s;
 }
 
-bool parsehex(const char *s, int c, uint8_t *d)
+// Scan a read string, fill byte array up to count
+bool ParseHex(const char *s, int c, uint8_t *d)
 {
     if ((int)strlen(s) != (int)(2*c)) return false; // Source string wrong length
     for (int i=0; i<c; i++) {
@@ -130,6 +101,7 @@ bool parsehex(const char *s, int c, uint8_t *d)
 }
 
 
+// Write sensor states and keys to file
 void SerializeSensors()
 {
     FILE *fp = fopen("sensors.json", "w");
@@ -142,7 +114,7 @@ void SerializeSensors()
             sprintf(buff, "%08X", gSensor[i].id);
             json_object_object_add(jsonSensor, "id", json_object_new_string(buff));
             json_object_object_add(jsonSensor, "name", json_object_new_string(gSensor[i].name));
-            json_object_object_add(jsonSensor, "aesKey", json_object_new_string(hexstring(gSensor[i].aesKey, 16)));
+            json_object_object_add(jsonSensor, "aesKey", json_object_new_string(HexString(gSensor[i].aesKey, 16)));
             json_object_object_add(jsonSensor, "joinTime", json_object_new_int(gSensor[i].joinTime));
             json_object_object_add(jsonSensor, "reportCount", json_object_new_int(gSensor[i].reportCount));
             json_object_object_add(jsonSensor, "reportEntries", json_object_new_int(gSensor[i].reportEntries));
@@ -161,6 +133,7 @@ void SerializeSensors()
     }
 }
 
+// Clear existing sensors and load from file
 void DeserializeSensors()
 {
     FILE *fp = fopen("sensors.json", "r");
@@ -210,7 +183,7 @@ void DeserializeSensors()
             n.name[sizeof(n.name)-1] = 0;
             json_object *jsonAES;
             if (!json_object_object_get_ex(s, "aesKey", &jsonAES)) continue;
-            if (!parsehex(json_object_get_string(jsonAES), 16, n.aesKey)) continue;
+            if (!ParseHex(json_object_get_string(jsonAES), 16, n.aesKey)) continue;
             json_object *jsonJoin;
             if (!json_object_object_get_ex(s, "joinTime", &jsonJoin)) continue;
             if (sscanf(json_object_get_string(jsonJoin), "%ld", &n.joinTime) != 1) continue;
@@ -288,19 +261,19 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
     for (int i=0; i<sensor->reportEntries; i++) {
         switch (sensor->reportType[i]) {
         case 0:
-            sprintf(payload, "%d %%", sensor->reportState[i]);
+            sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "battery%d", battCnt++);
             break; 
         case 1:
-            sprintf(payload, "%d", sensor->reportState[i]?1:0);
+            sprintf(payload, "%ud", sensor->reportState[i]?1:0);
             sprintf(topic, "switch%d", swCnt++);
             break;
         case 2:
-            sprintf(payload, "%d C", sensor->reportState[i]);
+            sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "temp%d", tempCnt++);
             break;
         case 3:
-            sprintf(payload, "%d", sensor->reportState[i]);
+            sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "analog%d", anCnt++);
             break;
         }
@@ -313,12 +286,6 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
         printf("Publishing: '%s'='%s'\n", fullTopic, payload);
         MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
     }
-}
-
-uint32_t GetSensorID(uint8_t *msg)
-{
-    uint32_t id = (msg[0]) | (msg[1]<<8) | (msg[2]<<16) | (msg[3]<<24);
-    return id;
 }
 
 void logHex(const char *str, uint8_t *b, int c)

@@ -17,3 +17,9 @@ void SetMessageTypeSeq(uint8_t msg[16], messageType_t type, int seq)
     msg[0] = ((type&0x07) << 5) | (seq & 0x1f);
 }
 
+uint32_t GetSensorID(uint8_t *msg)
+{
+    uint32_t id = (msg[0]) | (msg[1]<<8) | (msg[2]<<16) | (msg[3]<<24);
+    return id;
+}
+
