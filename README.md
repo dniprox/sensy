@@ -91,5 +91,8 @@ GPL Cryptographic routines from:
 NRF24L01 interface code from:
 * TMRh20's library: https://github.com/TMRh20/RF24
 
+1MHz bootloader @ 9600bps Optiboot from:
+http://forum.arduino.cc/index.php?topic=160647.15
+
 -Earle F. Philhower, III
  earlephilhower@yahoo.com

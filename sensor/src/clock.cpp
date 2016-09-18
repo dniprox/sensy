@@ -10,6 +10,8 @@
 
 #define debug 0
 
+static uint16_t clkFreq = 8000;
+
 static bool lowBatt=true; // If we're below 8mhz operating voltage
 void ClockSetLowBatt(bool state)
 {
@@ -45,20 +47,31 @@ void ClockSlow()
     RandEnable(false);
     isClockSlow = true;
     SetClockPrescaler(0x04); // /16, 0.5MHz
+    clkFreq = 500;
 }
 
 void ClockNormal()
 {
     if (!isClockSlow) return; // Already in normal mode
 
-    if (!lowBatt) SetClockPrescaler(0x00); // /1, 8MHz
-    else SetClockPrescaler(0x01); // /2, 4 MHz
+    if (!lowBatt) {
+        SetClockPrescaler(0x00); // /1, 8MHz
+        clkFreq = 8000;
+    } else {
+        SetClockPrescaler(0x01); // /2, 4 MHz
+        clkFreq = 4000;
+    }
     RandEnable(true);
     isClockSlow = false;
     if (debug) {
         Serial.println("CLOCKFAST");
         Serial.flush();
     }
+}
+
+uint16_t GetClockFreq()
+{
+    return clkFreq;
 }
 
 uint32_t FromNowMS(uint32_t delta)

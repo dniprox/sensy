@@ -237,7 +237,7 @@ void SendSensorAck(sensor_t *sensor, bool enc, uint8_t *rawSent)
 void LogMessage(sensor_t *sensor, uint8_t *decMsg)
 {
     decMsg[14] = 0;
-    printf("LOG: Sensor %d: %s\n", sensor->id, decMsg+1);
+    printf("LOG: Sensor %08X: %s\n", sensor->id, decMsg+1);
 }
 
 void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)

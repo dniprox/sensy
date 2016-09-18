@@ -1,5 +1,7 @@
+
+PREFIX=/
 LIBDIR=../lib
-CCFLAGS=-g -Wall -pedantic
+CCFLAGS=-g -Wall -pedantic -DPREFIX=$(PREFIX)
 CC=g++
 LDFLAGS=-g
 RF24=$(LIBDIR)/RF24

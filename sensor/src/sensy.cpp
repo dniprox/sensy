@@ -348,6 +348,18 @@ void CreateOrGetMAC()
 }
 
 
+void SendLog(const char *str)
+{
+    uint8_t msg[16];
+    SetMessageTypeSeq(msg, MSG_LOG, seqNo);
+    for (int i=0; i<14; i++) {
+        if (*str) msg[1+i] = *(str++);
+        else msg[1+i] = 0;
+    }
+    SendRadioMessage(msg, aesKey, NULL);
+}
+
+
 // the setup routine runs once when you press reset:
 void setup()
 {
@@ -597,6 +609,7 @@ SENDK2S:
         gotResp = false;
 
 SENDREPORT:
+        SendLog(GetClockFreq()==4000?"4MHz clock":"8MHz clock");
         ClockNormal();
         UpdateReportMsg(msg);
         logHex("Sending report: ", msg, 16);
