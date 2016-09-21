@@ -10,17 +10,17 @@
 
 #define debug 0
 
-static uint16_t clkFreq = 8000;
+static uint16_t clkFreq = 1000;
+static bool isClockSlow = true; // We start @ 1MHz INTOSC/8
 
 static bool lowBatt=true; // If we're below 8mhz operating voltage
+
 void ClockSetLowBatt(bool state)
 {
     if (debug && (lowBatt != state)) {
         Serial.print("LOWBATT=");
         Serial.println(lowBatt?"true":"false");
         Serial.flush();
-        Serial.end();
-        Serial.begin(state?19200:9600); // At 4MHz this is effectively 2x the baud rate
     }
     lowBatt = state;
 }
@@ -35,7 +35,6 @@ void ClockDelay(uint16_t ms)
 
 static void SetClockPrescaler(uint8_t clockPrescaler);
 
-static bool isClockSlow = false;
 
 void ClockSlow()
 {
@@ -91,9 +90,8 @@ uint32_t FromNowMS(uint32_t delta)
 
 static void SetClockPrescaler(uint8_t clockPrescaler)
 {
-    uint8_t oldSREG = SREG;
-    cli();                  // Below is a timed sequence, no IRQs allowed
+    cli();
     CLKPR = _BV(CLKPCE);    // Enable writes to the clock prescale register
     CLKPR = clockPrescaler; // Write new value
-    SREG = oldSREG;         // Restore IRQs
+    sei();
 }
