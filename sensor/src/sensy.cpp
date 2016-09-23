@@ -86,7 +86,8 @@ uint16_t ReadInternalBatteryTempFast()
     uint8_t h = ADCH;
     uint16_t res = (h<<8) | l;
 
-    // Scale results.  VCC=1023L, Vref=1100mV; Vref(mV)/Vref(cnt) = VCC(mV)/1023; => Vref(mV)*1023/Vref(cnt) = VCC(mV)
+    // Scale results:  VCC=1023L, Vref=1100mV;
+    // Vref(mV)/Vref(cnt) = VCC(mV)/1023 => Vref(mV)*1023/Vref(cnt) = VCC(mV)
     batt = (1100L*1023L) / res; // 1100mV, 2^10 as max
     
     // If 2.4V or below need to run at 4MHz, not 8, so signal this
@@ -109,8 +110,9 @@ uint16_t ReadInternalBatteryTempFast()
     h = ADCH;
     res = (h<<8) | l;
 
-    // The offset of 324.31 could be wrong. It is just an indication.
-    temp = (50*res - 16205/*324.31*50*/ ) / 61/*1.22*50*/;
+    // Offset taken from Arduino website, may not be very accurate
+    // Keep everything in integer by scaling by 50 on both sides
+    temp = (50*res - 16205 /*324.31*50*/ ) / 61 /*1.22*50*/;
     if (temp > 255) temp = 255; // !!! We be hot
 
     ShutdownADC();
@@ -158,7 +160,8 @@ void logHex(const char *header, const uint8_t *bytes, int cnt)
 #endif
 
 
-void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4], uint8_t name[8])
+void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4],
+                    uint8_t name[8])
 {
     memset(msg, 0, 16);
     SetMessageTypeSeq(msg, MSG_JOIN, 0);
@@ -295,13 +298,14 @@ void UpdateReportMsg(uint8_t *msg)
     static uint8_t cnt = 0;
     uint16_t bt = ReadInternalBatteryTempFast();
     uint16_t battPct= ((bt>>8)& 0xff);
-    const uint16_t minVolt = 90; //1.9V due to NRF
-    const uint16_t maxVolt = 200; //3.0V from 2xAA 1.5V
-    if (battPct < minVolt) battPct = 0;  /* <1.9 -> 0% */
-    else if (battPct > maxVolt) battPct = 100; /* > 3.0V = 100% */
-    else battPct = ((battPct-minVolt)*100) / (maxVolt - minVolt);  /* batt * [ (100-0) / (max-min) ] */
+    const uint16_t minVolt = 90; // 1.9V due to NRF
+    const uint16_t maxVolt = 200; // 3.0V from 2xAA 1.5V
+    if (battPct < minVolt) battPct = 0;  // <1.9 = 0%
+    else if (battPct > maxVolt) battPct = 100; // > 3.0V = 100%
+    else battPct = ((battPct-minVolt)*100) / (maxVolt - minVolt);
+                   //  batt * [ (100-0) / (max-min) ] 
     msg[1] = battPct & 0xff;
-    msg[2] = switch0?0xff:0x00; //digitalRead(mySwitch0)==HIGH?255:0;digitalRead(mySwitch0)==HIGH?255:0;
+    msg[2] = switch0?0xff:0x00;
     msg[3] = bt & 0xff;
     msg[4] = cnt++;
 }
@@ -332,7 +336,6 @@ void CreateOrGetMAC()
     uint8_t ck = EEPROM.read(EEPROM_MAC_CK);
     ck ^= sensorMAC[0] ^ sensorMAC[1] ^ sensorMAC[2] ^ sensorMAC[3] ^ 0xbe;
     if (ck==0) return; // Checksum OK, we're done here
-
     do {
         sensorMAC[0] = RandGet();
         sensorMAC[1] = RandGet();
@@ -363,10 +366,18 @@ void SendLog(const char *str)
 // the setup routine runs once when you press reset:
 void setup()
 {
-    // We start at INTOSC/8 = 1MHz, so let's check the battery and move to proper speed
+    // We start at INTOSC/8 = 1MHz, so let's check the battery
+    // and move to proper speed
     ReadInternalBatteryTempFast();
     ReadInternalBatteryTempFast();
+    ClockSlow();
     ClockNormal();
+
+    if (debug) {
+        Serial.begin(9600);
+        Serial.println("Initializing...");
+        Serial.flush();
+    }
 
     // Initialize the digital pin as an input pullup, so they don't float
     // Later individual pins can be reassigned output if needed
@@ -382,15 +393,10 @@ void setup()
     CreateOrGetMAC();
 
     SetupSensors();
-    if (debug) {
-        Serial.begin(9600);
-        Serial.println("Initializing...");
-        Serial.flush();
-    }
     radio.begin();
 }
 
-// the loop routine runs over and over again forever:
+// Main application
 void loop()
 {
     uint8_t msg[16];
@@ -410,7 +416,7 @@ void loop()
    
     if (!joined) {
         if (debug) Serial.println("Calculating private key");
-        // Make my code, it takes a while so have it ready when we start talking
+        // Make code, it takes a while so have it ready when we start talking
         ClockNormal();
         radio.powerDown();
 
@@ -465,7 +471,8 @@ SENDJOIN:
         retries = retriesJoin;
         gotResp = false;
         
-        // Send mine, and if we don't hear back retry a few times and finally give up and restart
+        // Send mine. If don't hear response then retry a few times
+        // and finally give up and restart
 SENDK0S:
         ClockNormal();
         logHex("Sending K0S: ", msg, 16);
@@ -497,7 +504,8 @@ SENDK0S:
         if (!gotResp) {
             if (retries--) goto SENDK0S;
             else {
-                if (debug) Serial.println("Unable to get K0G, restarting protocl");
+                if (debug)
+                    Serial.println("Unable to get K0G, restarting protocl");
                 goto SENDJOIN;
             }
         }
@@ -615,7 +623,8 @@ SENDREPORT:
         logHex("Sending report: ", msg, 16);
         SendRadioMessage(msg, aesKey, NULL);
         ClockSlow();
-        // For IRQ (state changes) we want to send this ASAP, let other check-ins back off for us
+        // For IRQ (state changes) we want to send this ASAP, let other
+        // check-ins back off for us
         timeout = FromNowMS(irq?timeoutDelay/10:timeoutDelay);
         while (millis() < timeout) {
             if (radio.available()) {
