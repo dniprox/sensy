@@ -78,10 +78,10 @@ uint32_t FromNowMS(uint32_t delta)
     uint32_t now = millis();
     if (isClockSlow) {
         // Divide by 16 (since we're at .5MHz, not 8)
-        delta = (delta >> 4) & (0x0fff);
+        delta = ((delta+15) >> 4) & (0x0fff);
     } else if (lowBatt) {
         // Divide by 2 (since we're at 4MHz, not 8)
-        delta = (delta >> 1) & (0x7fff);
+        delta = ((delta+1) >> 1) & (0x7fff);
     }
     if (delta==0) delta = 1;
     now += delta;
