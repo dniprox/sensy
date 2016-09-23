@@ -55,6 +55,7 @@ uint8_t RandGet()
     return data;
 }
 
+// Enable or disable random bit collection
 bool RandEnable(bool en)
 {
     bool old = rand_running;
@@ -71,33 +72,15 @@ bool RandEnable(bool en)
     return old;
 }
 
-// Implementation of RNGClass to use our generator for the EC system
-RNGClass::RNGClass() {}
-RNGClass::~RNGClass() {}
-void RNGClass::begin(const char *tag, int eepromAddress) {}
-void RNGClass::addNoiseSource(NoiseSource &source) {}
-void RNGClass::setAutoSaveTime(uint16_t minutes) {}
-void RNGClass::rand(uint8_t *data, size_t len)
-{
-    bool old = RandEnable(true);
-    while (len--) { *(data++) = RandGet(); }
-    RandEnable(old);
-}
-bool RNGClass::available(size_t len) const { return true; }
-void RNGClass::stir(const uint8_t *data, size_t len, unsigned int credit) {}
-void RNGClass::save() {}
-void RNGClass::loop() {}
-void RNGClass::destroy() {}
-RNGClass RNG;
-
-static uint8_t BitRev( uint8_t x ) 
+// Flip an 8-bit value
+uint8_t BitReverse( uint8_t x ) 
 { 
-    x = ((x >> 1) & 0x55) | ((x << 1) & 0xaa); 
-    x = ((x >> 2) & 0x33) | ((x << 2) & 0xcc); 
-    x = ((x >> 4) & 0x0f) | ((x << 4) & 0xf0); 
-    return x;    
+    const uint8_t rev[16] PROGMEM = { 0b0000, 0b1000, 0b0100, 0b1100,
+              0b0010, 0b1010, 0b0110, 0b1110, 0b0001, 0b1001, 0b0101,
+              0b1101, 0b0011, 0b1011, 0b0111, 0b1111 };
+    uint8_t r = (rev[x&0x0f]<<4) | (rev[(x>>4)&0x0f]);
+    return r;
 }
-
 
 // Try and get 1 bit of entropy from LSB of internal voltage reference
 static uint8_t ADCEntropy()
@@ -118,7 +101,7 @@ static uint8_t ADCEntropy()
     // Read it out
     uint8_t r = ADCL;
 
-    return l ^ r; //(l&0x0f) | ((r & 0x0f)<<4);
+    return BitReverse(l ^ r);
 }
 
 // Watchdog Timer ISR
@@ -131,8 +114,6 @@ ISR(WDT_vect)
     static uint8_t overwrite = 0;
 
     if (!rand_running) return; // If we're not enabled, just ignore
-
-    uint8_t next_tail = (rand_tail + 1) % MAXENTROPY;
   
     // Take the counter and optionally flip it on ADC noise
     sample = TCNT1L;
@@ -143,7 +124,8 @@ ISR(WDT_vect)
     result ^= sample ^ adcSample;
     curbit++;
 
-    if (curbit > 8) {
+    uint8_t next_tail = (rand_tail + 1) % MAXENTROPY;
+    if (curbit > 12) {
         curbit = 0;
         if (rand_head == next_tail) { // Buffer's full, XOR existing data
             rand_data[(rand_tail + overwrite) % MAXENTROPY] ^= result;
@@ -156,23 +138,39 @@ ISR(WDT_vect)
 }
     
 // Setup of the watchdog timer.
-void RandSetup() {
+void RandSetup()
+{
     cli();
-    MCUSR = 0;
   
-    /* Start timed sequence */
+    // 16ms WDT setting
+    MCUSR = 0;
     WDTCSR |= _BV(WDCE) | _BV(WDE);
-
-    /* Put WDT into interrupt mode */
-    /* Set shortest prescaler(time-out) value = 2048 cycles (~16 ms) */
     WDTCSR = _BV(WDIE);
 
-    // Timer 1 count up for OCR1A ms, just longer than WDT
+    // Timer 1 count up for OCR1A
     TCCR1A = 0x00;
     TCCR1B = (1 << WGM12) | (1 << CS11);
-    OCR1A = 17152L;
+    OCR1A = 65535L; // Ensure any LSB has equal chance of appearing
     TCNT1 = 0x00; 
 
     sei();
 }
 
+// Implementation of RNGClass to use our generator for the EC system
+RNGClass::RNGClass() {}
+RNGClass::~RNGClass() {}
+void RNGClass::begin(const char *tag, int eepromAddress) {}
+void RNGClass::addNoiseSource(NoiseSource &source) {}
+void RNGClass::setAutoSaveTime(uint16_t minutes) {}
+void RNGClass::rand(uint8_t *data, size_t len)
+{
+    bool old = RandEnable(true);
+    while (len--) { *(data++) = RandGet(); }
+    RandEnable(old);
+}
+bool RNGClass::available(size_t len) const { return true; }
+void RNGClass::stir(const uint8_t *data, size_t len, unsigned int credit) {}
+void RNGClass::save() {}
+void RNGClass::loop() {}
+void RNGClass::destroy() {}
+RNGClass RNG;
