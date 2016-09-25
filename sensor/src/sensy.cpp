@@ -12,6 +12,7 @@
 #include "rng.h"
 #include "clock.h"
 #include "eeprom.h"
+#include "thermistor.h"
 // INO has "some" issues, just include the source here...
 #include "../lib/coding.h"
 #include "../lib/coding.cpp"
@@ -21,8 +22,10 @@
 #include "../lib/radio.cpp"
 
 
-// Serial debugging enabled
-#define debug 1
+// Serial debugging
+#define debug 1 // Serial logging
+#define debugrng 0 // RNG dump to check entropy
+#define debugtemp 0 // Thermistor readout
 
 const uint8_t retriesJoin = 20;
 const uint8_t retriesReport = 15;
@@ -41,7 +44,6 @@ uint8_t  gwMon = 0;
 uint8_t  gwDay = 0;
 uint8_t  gwWeekday = 0;
 
-//RF24 radio(7,8);
  
 const int mySwitch0 = 2;
 
@@ -52,8 +54,8 @@ void ShutdownADC()
     ADMUX = 0x00;
     ADCSRA = 0x07;
     ADCSRB = 0x00;
-    DIDR0 = 0x00;
-    DIDR1 = 0x00;
+    DIDR0 = 0xff;
+    DIDR1 = 0x03;
     ACSR = 0x80;
     power_adc_disable();
 }
@@ -71,7 +73,7 @@ uint16_t ReadInternalBatteryTempFast()
 
     power_adc_enable();  // Need to be powered on before we write any registers
 
-    ADCSRA = 0x87; //  ADCEN=1,PS=/8 (1MHz w/8MHz clock)...will be lower quality, but so is the input signal
+    ADCSRA = 0x83; //  ADCEN=1,PS=/8 (1MHz w/8MHz clock)...will be lower quality, but so is the input signal
 
     // Set bandgap input
     ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
@@ -282,7 +284,7 @@ bool CheckSensors()
 
 void SetupReportMsg(uint8_t *msg)
 {
-    const uint8_t report[] = { BATTERY, SWITCH, TEMP, ANALOG };
+    const uint8_t report[] = { BATTERY, SWITCH, TEMP, ANALOG, TEMP };
     const uint8_t reports = sizeof(report)/sizeof(report[0]);
     memset(msg+7, 7, 0);
     msg[7] = (reports<<4) & 0xf0;
@@ -304,6 +306,7 @@ void UpdateReportMsg(uint8_t *msg)
     else if (battPct > maxVolt) battPct = 100; // > 3.0V = 100%
     else battPct = ((battPct-minVolt)*100) / (maxVolt - minVolt);
                    //  batt * [ (100-0) / (max-min) ] 
+    int16_t temp = ReadThermistor(10, A0);
     msg[1] = battPct & 0xff;
     msg[2] = switch0?0xff:0x00;
     msg[3] = bt & 0xff;
@@ -378,6 +381,26 @@ void setup()
         Serial.println("Initializing...");
         Serial.flush();
     }
+
+#if debugrng
+    RandSetup();
+    RandEnable(true);
+    while (1) {
+        uint8_t x = RandGet();
+        const char *hex="0123456789ABCDEF";
+        Serial.print(hex[(x>>4)&0x0f]);
+        Serial.print(hex[(x)&0x0f]);
+        Serial.flush();
+    }
+#endif
+
+#if debugtemp
+    while (1) {
+        int16_t a = ReadThermistor(10, A0);
+        Serial.print("TEMP = ");
+        Serial.println(a);
+    }
+#endif
 
     // Initialize the digital pin as an input pullup, so they don't float
     // Later individual pins can be reassigned output if needed
@@ -591,10 +614,6 @@ SENDK2S:
         if (!gotResp) {
             // At this stage we're committed to the new key.  They may have heard my new secret and sent my ACK
             goto SENDK2S;  // 
-            //if (retries--) goto SENDK2S;
-            //else {
-            //    if (debug) Serial.println("No ACK received, ignoring");
-            //}
         }
 
         radio.powerDown(); // At this point, no talking while we think...
