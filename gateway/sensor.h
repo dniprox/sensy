@@ -4,9 +4,6 @@
 // Sensor state machine state
 typedef enum { WAITJOIN, WAITK0S, WAITK1S, WAITK2S, WAITREPORT } state_t;
 
-// Reported data is always one byte per entry
-typedef uint8_t report_t;
-
 // Sensor total state
 typedef struct {
     bool     joined;     // Have we sync'd up with an AES key?

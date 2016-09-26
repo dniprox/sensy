@@ -237,8 +237,6 @@ void ZZZ(uint16_t secs)
 const int16_t sampleDelay = 10;;
 
 
-typedef enum { BATTERY=0, SWITCH, TEMP, ANALOG } report_t;
-
 // Any continuously powered sensors need to be set up here
 void SetupSensors()
 {
@@ -265,6 +263,8 @@ void PowerSensors(bool powered)
 }
 
 bool switch0 = false;
+int16_t thermTemp = 0;
+
 bool CheckSensors()
 {
     static bool lastSwitch0 = false;
@@ -278,13 +278,15 @@ bool CheckSensors()
         switch0 = nextSwitch0;
     }
     lastSwitch0 = nextSwitch0;
+
+    thermTemp = ReadThermistor(10, A0);
     return wantIRQ;
 }
 
 
 void SetupReportMsg(uint8_t *msg)
 {
-    const uint8_t report[] = { BATTERY, SWITCH, TEMP, ANALOG, TEMP };
+    const uint8_t report[] = { BATTERY, SWITCH, TEMP, ANALOG, ANALOG16X10 };
     const uint8_t reports = sizeof(report)/sizeof(report[0]);
     memset(msg+7, 7, 0);
     msg[7] = (reports<<4) & 0xf0;
@@ -311,6 +313,8 @@ void UpdateReportMsg(uint8_t *msg)
     msg[2] = switch0?0xff:0x00;
     msg[3] = bt & 0xff;
     msg[4] = cnt++;
+    msg[5] = thermTemp&0xff;
+    msg[6] = (thermTemp>>8) & 0xff;
 }
 
 

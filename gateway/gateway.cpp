@@ -201,7 +201,7 @@ void DeserializeSensors()
             for (int j=0; j<cnt; j++) {
                 json_object *q = json_object_array_get_idx(r, j);
                 if (!json_object_is_type(q, json_type_int)) continue;
-                n.reportType[j] = json_object_get_int(q);
+                n.reportType[j] = (report_t)json_object_get_int(q);
             }
             sensors++;
             gSensor=(sensor_t*)realloc(gSensor, sizeof(sensor_t)*sensors);
@@ -258,24 +258,30 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
     int swCnt = 0;
     int tempCnt = 0;
     int anCnt = 0;
+    int fltCnt = 0;
     for (int i=0; i<sensor->reportEntries; i++) {
         switch (sensor->reportType[i]) {
-        case 0:
+        case BATTERY:
             sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "battery%d", battCnt++);
             break; 
-        case 1:
+        case SWITCH:
             sprintf(payload, "%ud", sensor->reportState[i]?1:0);
             sprintf(topic, "switch%d", swCnt++);
             break;
-        case 2:
+        case TEMP:
             sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "temp%d", tempCnt++);
             break;
-        case 3:
+        case ANALOG:
             sprintf(payload, "%ud", sensor->reportState[i]);
             sprintf(topic, "analog%d", anCnt++);
             break;
+        case ANALOG16X10:
+            int16_t val = sensor->reportState[i] + 255*sensor->reportState[i+1];
+            i++;
+            sprintf(payload, "%0.1f", ((double)val)/10.0);
+            sprintf(topic, "float%d", fltCnt++);
         }
         msg.payload = payload;
         msg.payloadlen = strlen(payload);
@@ -587,19 +593,19 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
             logHex("<K2S: ", decMsg, 16);
 
             sensor->reportEntries = (decMsg[7]>>4) & 0x0f;
-            sensor->reportType[0] = (decMsg[7]) & 0x0f;
-            sensor->reportType[1] = (decMsg[8]>>4) & 0x0f;
-            sensor->reportType[2] = (decMsg[8]) & 0x0f;
-            sensor->reportType[3] = (decMsg[9]>>4) & 0x0f;
-            sensor->reportType[4] = (decMsg[9]) & 0x0f;
-            sensor->reportType[5] = (decMsg[10]>>4) & 0x0f;
-            sensor->reportType[6] = (decMsg[10]) & 0x0f;
-            sensor->reportType[7] = (decMsg[11]>>4) & 0x0f;
-            sensor->reportType[8] = (decMsg[11]) & 0x0f;
-            sensor->reportType[9] = (decMsg[12]>>4) & 0x0f;
-            sensor->reportType[10] = (decMsg[12]) & 0x0f;
-            sensor->reportType[11] = (decMsg[13]>>4) & 0x0f;
-            sensor->reportType[12] = (decMsg[13]) & 0x0f;
+            sensor->reportType[0] = (report_t)((decMsg[7]) & 0x0f);
+            sensor->reportType[1] = (report_t)((decMsg[8]>>4) & 0x0f);
+            sensor->reportType[2] = (report_t)((decMsg[8]) & 0x0f);
+            sensor->reportType[3] = (report_t)((decMsg[9]>>4) & 0x0f);
+            sensor->reportType[4] = (report_t)((decMsg[9]) & 0x0f);
+            sensor->reportType[5] = (report_t)((decMsg[10]>>4) & 0x0f);
+            sensor->reportType[6] = (report_t)((decMsg[10]) & 0x0f);
+            sensor->reportType[7] = (report_t)((decMsg[11]>>4) & 0x0f);
+            sensor->reportType[8] = (report_t)((decMsg[11]) & 0x0f);
+            sensor->reportType[9] = (report_t)((decMsg[12]>>4) & 0x0f);
+            sensor->reportType[10] = (report_t)((decMsg[12]) & 0x0f);
+            sensor->reportType[11] = (report_t)((decMsg[13]>>4) & 0x0f);
+            sensor->reportType[12] = (report_t)((decMsg[13]) & 0x0f);
             
             sensor->lastSeqNo = -1;
 

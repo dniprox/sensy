@@ -21,4 +21,7 @@ uint8_t GetSequenceNum(const uint8_t msg[16]);
 void SetMessageTypeSeq(uint8_t msg[16], messageType_t type, int seq);
 uint32_t GetSensorID(uint8_t *msg);
 
+
+typedef enum { BATTERY=0, SWITCH, TEMP, ANALOG, ANALOG16X10 } report_t;
+
 #endif
