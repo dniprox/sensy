@@ -189,7 +189,7 @@ void DeserializeSensors()
             if (sscanf(json_object_get_string(jsonJoin), "%ld", &n.joinTime) != 1) continue;
             json_object *jsonCnt;
             if (!json_object_object_get_ex(s, "reportCount", &jsonCnt)) continue;
-            if (sscanf(json_object_get_string(jsonCnt), "%ud", &n.reportCount) != 1) continue;
+            if (sscanf(json_object_get_string(jsonCnt), "%u", &n.reportCount) != 1) continue;
             json_object *jsonRE;
             if (!json_object_object_get_ex(s, "reportEntries", &jsonRE)) continue;
             if (sscanf(json_object_get_string(jsonRE), "%d", &n.reportEntries) != 1) continue;
@@ -262,19 +262,19 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
     for (int i=0; i<sensor->reportEntries; i++) {
         switch (sensor->reportType[i]) {
         case BATTERY:
-            sprintf(payload, "%ud", sensor->reportState[i]);
+            sprintf(payload, "%u", sensor->reportState[i]);
             sprintf(topic, "battery%d", battCnt++);
             break; 
         case SWITCH:
-            sprintf(payload, "%ud", sensor->reportState[i]?1:0);
+            sprintf(payload, "%u", sensor->reportState[i]?1:0);
             sprintf(topic, "switch%d", swCnt++);
             break;
         case TEMP:
-            sprintf(payload, "%ud", sensor->reportState[i]);
+            sprintf(payload, "%u", sensor->reportState[i]);
             sprintf(topic, "temp%d", tempCnt++);
             break;
         case ANALOG:
-            sprintf(payload, "%ud", sensor->reportState[i]);
+            sprintf(payload, "%u", sensor->reportState[i]);
             sprintf(topic, "analog%d", anCnt++);
             break;
         case ANALOG16X10:
