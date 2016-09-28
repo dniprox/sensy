@@ -123,6 +123,12 @@ void SerializeSensors()
                 json_object_array_add(arr, json_object_new_int(gSensor[i].reportType[j]));
             }
             json_object_object_add(jsonSensor, "reportType", arr);
+            json_object *narr = json_object_new_array();
+            for (int j=0; j<gSensor[i].reportEntries; j++) {
+                json_object_array_add(narr, json_object_new_string(gSensor[i].reportName[j]));
+            }
+            json_object_object_add(jsonSensor, "reportName", narr);
+
             json_object_array_add(jsonSensors, jsonSensor);
         }
         json_object *jsonTop = json_object_new_object();
@@ -203,11 +209,23 @@ void DeserializeSensors()
                 if (!json_object_is_type(q, json_type_int)) continue;
                 n.reportType[j] = (report_t)json_object_get_int(q);
             }
+            if (!json_object_object_get_ex(s, "reportName", &r)) continue;
+            if (!json_object_is_type(r, json_type_array)) continue;
+            cnt = json_object_array_length(r);
+            if ((cnt != n.reportEntries) || (cnt > 13)) continue;
+            for (int j=0; j<cnt; j++) {
+                json_object *q = json_object_array_get_idx(r, j);
+                if (!json_object_is_type(q, json_type_string)) continue;
+                strcpy(n.reportName[j], json_object_get_string(q));
+                n.reportName[j][13] = 0;
+            }
             sensors++;
             gSensor=(sensor_t*)realloc(gSensor, sizeof(sensor_t)*sensors);
             memcpy(&gSensor[sensors-1], &n, sizeof(sensor_t));
         }
         json_object_put(config);
+
+        free(json);
     }
 }
 
@@ -534,6 +552,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     sensor->reportName[GetSequenceNum(decMsg)][13] = 0;
                     SendSensorAck(sensor, true, NULL);
                     packetsSent++;
+                    SerializeSensors();
                     sensor->reportCount++;
                 } else {
                     packetsBad++;
