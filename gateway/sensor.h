@@ -26,6 +26,7 @@ typedef struct {
     int      reportEntries;   // How many fields 
     report_t reportType[13];  // Field type
     uint8_t  reportState[13]; // The raw data from last sensor report
+    char     reportName[13][14]; // Friendly name for each sensor report
     uint32_t reportCount;     // Number of reports we've heard since joining
     
     uint8_t fm[32], km[32], ky[32]; // Used for key exchange/generation

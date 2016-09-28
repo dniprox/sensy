@@ -240,6 +240,19 @@ void LogMessage(sensor_t *sensor, uint8_t *decMsg)
     printf("LOG: Sensor %08X: %s\n", sensor->id, decMsg+1);
 }
 
+void Publish(const char *sensorName, uint32_t sensorID, const char *topic, const char *topicAppend, char *payload)
+{
+    MQTTClient_message msg = MQTTClient_message_initializer;
+    msg.payload = payload;
+    msg.payloadlen = strlen(payload);
+    msg.qos = mqttQOS;
+    msg.retained = 0;
+    char fullTopic[128];
+    sprintf(fullTopic, "%s/%s/%08X/%s%s", mqttTopic, sensorName, sensorID, topic, topicAppend);
+    printf("Publishing: '%s'='%s'\n", fullTopic, payload);
+    MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
+}
+
 void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
 {
     printf("SENSOR %08X: ", sensor->id);
@@ -251,46 +264,85 @@ void UpdateSensorState(sensor_t *sensor, uint8_t *decMsg)
     sensor->lastSeqNo = GetSequenceNum(decMsg);
 
     // Publish them 
-    MQTTClient_message msg = MQTTClient_message_initializer;
-    char payload[64];
     char topic[64];
-    int battCnt = 0;
-    int swCnt = 0;
-    int tempCnt = 0;
-    int anCnt = 0;
-    int fltCnt = 0;
+    char temp[64];
+    char on[4];
+    char off[4];
+    int16_t i16;
+    strcpy(on, "1");
+    strcpy(off, "0");
     for (int i=0; i<sensor->reportEntries; i++) {
+        if (sensor->reportName[i][0])
+            strcpy(topic, sensor->reportName[i]);
+        else
+            sprintf(topic, "report_%d", i);
         switch (sensor->reportType[i]) {
-        case BATTERY:
-            sprintf(payload, "%u", sensor->reportState[i]);
-            sprintf(topic, "battery%d", battCnt++);
-            break; 
-        case SWITCH:
-            sprintf(payload, "%u", sensor->reportState[i]?1:0);
-            sprintf(topic, "switch%d", swCnt++);
+        case ONEFLAG:
+            Publish(sensor->name, sensor->id, topic, "", (sensor->reportState[i]&1)?on:off);
             break;
-        case TEMP:
-            sprintf(payload, "%u", sensor->reportState[i]);
-            sprintf(topic, "temp%d", tempCnt++);
+        case TWOFLAG:
+            Publish(sensor->name, sensor->id, topic, "0", (sensor->reportState[i]&1)?on:off);
+            Publish(sensor->name, sensor->id, topic, "1", (sensor->reportState[i]&2)?on:off);
             break;
-        case ANALOG:
-            sprintf(payload, "%u", sensor->reportState[i]);
-            sprintf(topic, "analog%d", anCnt++);
+        case FOURFLAG:
+            Publish(sensor->name, sensor->id, topic, "0", (sensor->reportState[i]&1)?on:off);
+            Publish(sensor->name, sensor->id, topic, "1", (sensor->reportState[i]&2)?on:off);
+            Publish(sensor->name, sensor->id, topic, "2", (sensor->reportState[i]&4)?on:off);
+            Publish(sensor->name, sensor->id, topic, "3", (sensor->reportState[i]&8)?on:off);
             break;
-        case ANALOG16X10:
-            int16_t val = sensor->reportState[i] + 255*sensor->reportState[i+1];
+        case EIGHTFLAG:
+            Publish(sensor->name, sensor->id, topic, "0", (sensor->reportState[i]&1)?on:off);
+            Publish(sensor->name, sensor->id, topic, "1", (sensor->reportState[i]&2)?on:off);
+            Publish(sensor->name, sensor->id, topic, "2", (sensor->reportState[i]&4)?on:off);
+            Publish(sensor->name, sensor->id, topic, "3", (sensor->reportState[i]&8)?on:off);
+            Publish(sensor->name, sensor->id, topic, "4", (sensor->reportState[i]&16)?on:off);
+            Publish(sensor->name, sensor->id, topic, "5", (sensor->reportState[i]&32)?on:off);
+            Publish(sensor->name, sensor->id, topic, "6", (sensor->reportState[i]&64)?on:off);
+            Publish(sensor->name, sensor->id, topic, "7", (sensor->reportState[i]&128)?on:off);
+            break;
+        case UINT8:
+        case PERCENT:
+            sprintf(temp, "%u%s", (unsigned int)(sensor->reportState[i]), sensor->reportType[i]==PERCENT?"%":"");
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            break;
+        case INT8:
+            sprintf(temp, "%d", (int)(sensor->reportState[i]));
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            break;
+        case UINT16:
+            sprintf(temp, "%u", (unsigned int)(sensor->reportState[i]+256*sensor->reportState[i+1]));
+            Publish(sensor->name, sensor->id, topic, "", temp);
             i++;
-            sprintf(payload, "%0.1f", ((double)val)/10.0);
-            sprintf(topic, "float%d", fltCnt++);
+            break;
+        case INT16:
+            i16 = sensor->reportState[i]+256*sensor->reportState[i+1];
+            sprintf(temp, "%d", (int)(i16)); i++;
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            i++;
+            break;
+        case FIXPT16X10:
+            i16 = sensor->reportState[i]+256*sensor->reportState[i+1];
+            sprintf(temp, "%0.1f", ((double)i16)/10.0);
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            i++;
+            break;
+        case FIXPT16X100:
+            i16 = sensor->reportState[i]+256*sensor->reportState[i+1];
+            sprintf(temp, "%0.2f", ((double)i16)/100.0);
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            i++;
+            break;
+        case FRACT8:
+            sprintf(temp, "%0.4f", ((double)sensor->reportState[i])/255.0);
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            break;
+        case FRACT16:
+            uint16_t u16 = sensor->reportState[i]+256*sensor->reportState[i+1];
+            sprintf(temp, "%0.6f", ((double)u16)/65535.0);
+            Publish(sensor->name, sensor->id, topic, "", temp);
+            i++;
+            break;
         }
-        msg.payload = payload;
-        msg.payloadlen = strlen(payload);
-        msg.qos = mqttQOS;
-        msg.retained = 0;
-        char fullTopic[128];
-        sprintf(fullTopic, "%s/%s/%08X/%s", mqttTopic, sensor->name, sensor->id, topic);
-        printf("Publishing: '%s'='%s'\n", fullTopic, payload);
-        MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
     }
 }
 
@@ -475,6 +527,11 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     SendSensorAck(sensor, true, NULL);
                     packetsSent++;
                     sensor->reportCount++;
+                } else if (GetMessageType(decMsg) == MSG_SINFO) {
+                    packetsGood++;
+                    logHex(">SINFO: ", decMsg, 16);
+                    memcpy(&sensor->reportName[GetSequenceNum(decMsg)], &decMsg[1], 13);
+                    sensor->reportName[GetSequenceNum(decMsg)][13] = 0;
                 } else {
                     packetsBad++;
                     logHex("Unexpected in WAITREPORT: ", decMsg, 16);

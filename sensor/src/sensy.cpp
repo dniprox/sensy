@@ -286,7 +286,7 @@ bool CheckSensors()
 
 void SetupReportMsg(uint8_t *msg)
 {
-    const uint8_t report[] = { BATTERY, SWITCH, TEMP, ANALOG, ANALOG16X10 };
+    const uint8_t report[] = { PERCENT, ONEFLAG, UINT8, UINT8, FIXPT16X10 };
     const uint8_t reports = sizeof(report)/sizeof(report[0]);
     memset(msg+7, 7, 0);
     msg[7] = (reports<<4) & 0xf0;
@@ -422,6 +422,9 @@ void setup()
     SetupSensors();
     radio.begin();
 }
+
+bool sentSensors = false;
+
 
 // Main application
 void loop()
