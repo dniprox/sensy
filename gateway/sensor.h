@@ -28,7 +28,7 @@ typedef struct {
     uint8_t  reportState[13]; // The raw data from last sensor report
     char     reportName[13][14]; // Friendly name for each sensor report
     uint32_t reportCount;     // Number of reports we've heard since joining
-    
+    char     reportText[1024]; // Text-format report for simple web iface
     uint8_t fm[32], km[32], ky[32]; // Used for key exchange/generation
 
     uint8_t outMsg[16]; // Last message sent to sensor
