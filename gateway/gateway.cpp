@@ -532,6 +532,9 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
                     logHex(">SINFO: ", decMsg, 16);
                     memcpy(&sensor->reportName[GetSequenceNum(decMsg)], &decMsg[1], 13);
                     sensor->reportName[GetSequenceNum(decMsg)][13] = 0;
+                    SendSensorAck(sensor, true, NULL);
+                    packetsSent++;
+                    sensor->reportCount++;
                 } else {
                     packetsBad++;
                     logHex("Unexpected in WAITREPORT: ", decMsg, 16);

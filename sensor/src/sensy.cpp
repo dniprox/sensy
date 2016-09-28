@@ -297,6 +297,23 @@ void SetupReportMsg(uint8_t *msg)
     }
 }
 
+bool SetupSensorInfoMsg(uint8_t *msg)
+{
+    const char sensorName[][13] PROGMEM = {
+        "Battery",
+        "Switch",
+        "IntTemp",
+        "ReportNum",
+        "Temp" };
+
+    // Have we sent all that we can?
+    if (GetSequenceNum(msg) > 5) {
+        return false;
+    }
+    memcpy(msg+1, sensorName[GetSequenceNum(msg)], 13);
+}
+
+
 void UpdateReportMsg(uint8_t *msg)
 {
     static uint8_t cnt = 0;
@@ -316,8 +333,6 @@ void UpdateReportMsg(uint8_t *msg)
     msg[5] = thermTemp&0xff;
     msg[6] = (thermTemp>>8) & 0xff;
 }
-
-
 
 void ProcessACK(uint8_t *dec)
 {
@@ -634,7 +649,52 @@ SENDK2S:
             seqNo = 0;
             return; // We're joined, go back to main....
         }
-    } else /* joined */ {
+    } else if (joined && !sentSensors) {
+        ClockNormal();
+        radio.powerUp();
+        memset(msg, 0, 16);
+        SetMessageTypeSeq(msg, MSG_SINFO, seqNo);
+        if (!SetupSensorInfoMsg(msg)) {
+            sentSensors = true;
+            return; // We're done, send normal reports now...
+        }
+        retries = retriesJoin;
+        gotResp = false;
+SENDSINFO:
+        ClockNormal();
+        logHex("Sending SINFO: ", msg, 16);
+        SendRadioMessage(msg, aesKey, NULL);
+        ClockSlow();
+        timeout = FromNowMS(timeoutDelay);
+        while (millis() < timeout) {
+            if (radio.available()) {
+                ClockNormal();
+                radio.read(raw, 19);
+                CorrectMessage(rec, raw);
+                if (!CheckMessageAES(dec, aesKey, rec)) {
+                    logHex("CRC mismatch, discarding ", dec, 16);
+                    break;
+                }
+                if (GetMessageType(dec) != MSG_ACK) {
+                    logHex("Want ACK, got, discarding:", dec, 16);
+                    break;
+                }
+                ProcessACK(dec);
+                gotResp = true;
+                break;
+            }
+        }
+        ClockNormal(); // It'll be stopped right afterwards, anyways
+        if (!gotResp) {
+            if (retries--) goto SENDSINFO;
+            else {
+                if (debug) Serial.println("No ACK received, ignoring");
+            }
+        }
+        radio.powerDown();
+        seqNo++; // SeqNo can never get above # sensors, and we start at 0, so no need to check for rollover here
+
+    } else if (joined && sentSensors) {
         ClockNormal();
         radio.powerUp();
         memset(msg, 0, 16);
