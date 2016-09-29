@@ -140,6 +140,7 @@ void SerializeSensors()
             char buff[16];
             sprintf(buff, "%08X", gSensor[i].id);
             json_object_object_add(jsonSensor, "id", json_object_new_string(buff));
+            json_object_object_add(jsonSensor, "mqttName", json_object_new_string(gSensor[i].mqttName));
             json_object_object_add(jsonSensor, "name", json_object_new_string(gSensor[i].name));
             json_object_object_add(jsonSensor, "aesKey", json_object_new_string(HexString(gSensor[i].aesKey, 16)));
             json_object_object_add(jsonSensor, "joinTime", json_object_new_int(gSensor[i].joinTime));
@@ -210,6 +211,11 @@ void DeserializeSensors()
                 continue;
             }
             if (sscanf(json_object_get_string(jsonID), "%x", &n.id) != 1) continue;
+            json_object *jsonMQTTName;
+            if (json_object_object_get_ex(s, "mqttName", &jsonMQTTName)) {
+                strncpy(n.mqttName, json_object_get_string(jsonMQTTName), sizeof(n.mqttName));
+                n.mqttName[sizeof(n.mqttName)-1] = 0;
+            }
             json_object *jsonName;
             if (!json_object_object_get_ex(s, "name", &jsonName)) continue;
             strncpy(n.name, json_object_get_string(jsonName), sizeof(n.name));
@@ -296,7 +302,8 @@ void Publish(sensor_t *sensor, const char *topic, const char *topicAppend, char 
     msg.qos = mqttQOS;
     msg.retained = 0;
     char fullTopic[128];
-    sprintf(fullTopic, "%s/%s/%08X/%s%s", mqttTopic, sensor->name, sensor->id, topic, topicAppend);
+    if (sensor->mqttName[0]) sprintf(fullTopic, "%s/%s/%s/%s%s", mqttTopic, sensor->name, sensor->mqttName, topic, topicAppend);
+    else sprintf(fullTopic, "%s/%s/%08X/%s%s", mqttTopic, sensor->name, sensor->id, topic, topicAppend);
     MQTTClient_publishMessage(mqtt, fullTopic, &msg, NULL);
     char report[128];
     sprintf(report, "'%s%s'='%s';", topic, topicAppend, payload);
@@ -782,11 +789,19 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
     return false;
 }
 
+// Call after acquiring the sensor lock
+sensor_t *FindSensor(uint32_t id)
+{
+    for (int i=0; i<sensors; i++)
+        if ( gSensor[i].id == id) return &gSensor[i];
+    return NULL;
+}
 
-bool WebStatus(const char *uri, char **output)
+
+bool WebStatus(const char *uri, kv_t *kv, char **output)
 {
     // Only handle main page for now
-    if (!strcmp(uri, "/") || !strcmp(uri, "/index.html") || !strcmp(uri, "index.html") || !strcmp(uri, "/index.html?")) {
+    if (!strcmp(uri, "/") || !strcmp(uri, "/index.html") || !strcmp(uri, "index.html")) {
         char *buff = (char*)malloc(65536);
         if (!buff) return false;
 
@@ -805,15 +820,17 @@ bool WebStatus(const char *uri, char **output)
         strcat(buff, line);
         sprintf(line, "Packets Sent: %d, Resent: %d<br>\n", packetsSent, packetsResent);
         strcat(buff, line);
-        sprintf(line, "ECC corrected bits: %d<br><br>\n", corrBits);
+        sprintf(line, "ECC corrected bits: %d<br>\n", corrBits);
         strcat(buff, line);
         strcat(buff, "<h1>Sensors</h1>\n");
-        strcat(buff, "<table border=\"1\"><tr><th>ID</th><th>TYPE</th><th>LAST REPORT</th><th>TOTAL REPORTS</th><th>REPORT</th><th>&nbsp;</th></tr>\n");
+        strcat(buff, "<table border=\"1\"><tr><th>ID/Name</th><th>TYPE</th><th>LAST REPORT</th><th>TOTAL REPORTS</th><th>REPORT</th><th>&nbsp;</th></tr>\n");
         time_t now = time(NULL);
         pthread_mutex_lock( &mutexSensor );
         for (int i=0; i<sensors; i++) {
             if (!gSensor[i].joined) continue;
-            sprintf(line, "<tr><td>%08X</td><td>%s</td><td>%ld</td><td>%u</td><td>%s</td><td><form action=\"lastchance.html-id=%08X\"><input type=\"submit\" value=\"Remove\" /></form></tr>\n", gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport, gSensor[i].reportCount, gSensor[i].reportText, gSensor[i].id);
+            char idStr[9];
+            sprintf(idStr, "%08X", gSensor[i].id);
+            sprintf(line, "<tr><td>%s<form action=\"rename.html\" method=\"get\"><input type=\"hidden\" name=\"id\" value=\"%08X\"><input type=\"submit\" value=\"Rename\" /></form></td><td>%s</td><td>%ld</td><td>%u</td><td>%s</td><td><form action=\"lastchance.html\" method=\"get\"><input type=\"hidden\" name=\"id\" value=\"%08X\"><input type=\"submit\" value=\"Remove\" /></form></tr>\n", gSensor[i].mqttName[0]?gSensor[i].mqttName:idStr, gSensor[i].id, gSensor[i].name, now - gSensor[i].lastReport, gSensor[i].reportCount, gSensor[i].reportText, gSensor[i].id);
             strcat(buff, line);
         }
         pthread_mutex_unlock( &mutexSensor );
@@ -833,9 +850,10 @@ bool WebStatus(const char *uri, char **output)
         // Redirect to main page
         *output = strdup("<html><head><title>Join Enabled</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
         return true;
-    } else if (!strncmp(uri, "/lastchance.html-id=", 19)) {
+    } else if (!strcmp(uri, "/lastchance.html")) {
         uint32_t id;
-        if (sscanf(uri, "/lastchance.html-id=%x", &id) != 1) {
+        const char *strID = GetKV(kv, "id");
+        if (!strID || (sscanf(strID, "%x", &id) != 1)) {
             return false;
         }
 
@@ -845,12 +863,12 @@ bool WebStatus(const char *uri, char **output)
 
         char line[8192];
         strcat(buff, "<html>\n");
-        sprintf(line, "<head><meta http-equiv=\"refresh\" content=\"10\"><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
+        sprintf(line, "<head><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
         strcat(buff, line);
         strcat(buff, "<body>\n");
         sprintf(line, "Do you really want to remove sensor %08X?<br>\n", id);
         strcat(buff, line);
-        sprintf(line, "<table><tr><td><form action=\"remove.html-id=%08X\"><input type=\"submit\" value=\"Yes\" /></form></td>", id);
+        sprintf(line, "<table><tr><td><form action=\"remove.html\" method=\"get\"><input type=\"hidden\" name=\"id\" value=\"%08X\"><input type=\"submit\" value=\"Yes\" /></form></td>", id);
         strcat(buff, line);
         sprintf(line, "<td><form action=\"index.html\"><input type=\"submit\" value=\"No\" /></form></td></tr></table><br>\n");
         strcat(buff, line);
@@ -858,9 +876,10 @@ bool WebStatus(const char *uri, char **output)
         
         *output = buff;
         return true;
-    } else if (!strncmp(uri, "/remove.html-id=", 15)) {
+    } else if (!strcmp(uri, "/remove.html")) {
         uint32_t id;
-        if (sscanf(uri, "/remove.html-id=%x", &id) != 1) {
+        const char *strID = GetKV(kv, "id");
+        if (!strID || (sscanf(strID, "%x", &id) != 1)) {
             return false;
         }
         pthread_mutex_lock( &mutexSensor );
@@ -872,8 +891,63 @@ bool WebStatus(const char *uri, char **output)
                 memcpy(&gSensor[j], &gSensor[i+1], sizeof(sensor_t)*sensors);
             }
         }
+        SerializeSensors();
         pthread_mutex_unlock( &mutexSensor );
-        *output = strdup("<html><head><title>Join Enabled</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
+        *output = strdup("<html><head><title>Sensor Removed</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
+        return true;
+    } else if (!strcmp(uri, "/rename.html")) {
+        uint32_t id;
+        const char *strID = GetKV(kv, "id");
+        if (!strID || (sscanf(strID, "%x", &id) != 1)) {
+            return false;
+        }
+
+        char *buff = (char*)malloc(65536);
+        if (!buff) return false;
+        buff[0] = 0;
+
+        pthread_mutex_lock( &mutexSensor );
+        sensor_t *s = FindSensor(id);
+        if (!s) {
+            pthread_mutex_unlock( &mutexSensor );
+            return false;
+        }
+
+        char line[8192];
+        strcat(buff, "<html>\n");
+        sprintf(line, "<head><title>Sensy Gateway: %s</title></head>\n", mqttTopic);
+        strcat(buff, line);
+        strcat(buff, "<body>\n");
+        sprintf(line, "Renaming sensor ID: '%08X'<br>\nPresent name: '%s'<br>\n", s->id, s->mqttName);
+        strcat(buff, line);
+        sprintf(line, "<table><tr><td><form action=\"reallyrename.html\" method=\"get\"><input type=\"hidden\" name=\"id\" value=\"%08X\"><input type=\"text\" name=\"name\" maxlength=\"64\"><br><input type=\"submit\" value=\"Rename\" /></form></td>", id);
+        strcat(buff, line);
+        sprintf(line, "<td><form action=\"index.html\"><input type=\"submit\" value=\"Cancel\" /></form></td></tr></table><br>\n");
+        strcat(buff, line);
+        strcat(buff, "</table></body></html>\n");
+
+        pthread_mutex_unlock( &mutexSensor );
+
+        *output = buff;
+        return true;
+    } else if (!strcmp(uri, "/reallyrename.html")) {
+        uint32_t id;
+        const char *strID = GetKV(kv, "id");
+        if (!strID || (sscanf(strID, "%x", &id) != 1)) {
+            return false;
+        }
+        const char *name = GetKV(kv, "name");
+        if (!name) return false;
+        sensor_t *s = FindSensor(id);
+        if (!s) {
+            pthread_mutex_unlock( &mutexSensor );
+            return false;
+        }
+        strncpy(s->mqttName, name, sizeof(s->mqttName));
+        s->mqttName[sizeof(s->mqttName)-1] = 0;
+        SerializeSensors();
+        pthread_mutex_unlock( &mutexSensor );
+        *output = strdup("<html><head><title>Sensor Renamed</title><meta http-equiv=\"refresh\" content=\"0;URL='index.html'\"/></head><body><a href=\"index.html\">Back to status page</a></body></html>");
         return true;
     } else {
         return false;

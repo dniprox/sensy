@@ -10,6 +10,7 @@ typedef struct {
     state_t  state;      // Gateway state machine
 
     uint32_t id;         // MAC/ID of sensor
+    char     mqttName[64]; // Name to use for mqtt report (ID in hex if nome)
     char     name[10];   // Name/Type reported by sensor
 
     uint8_t  aesKey[16]; // AES encryption key we're using now

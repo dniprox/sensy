@@ -6,9 +6,8 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
+#include "web.h"
 
-
-typedef bool (*HandleURI)(const char *uri, char **output);
 
 static HandleURI requestHandler = NULL;
 static pthread_t webThread;
@@ -48,6 +47,85 @@ static char *Base64Decode(const char *src)
     }
     *dest = 0; // Terminate the string
     return ret;
+}
+
+// Decode URL encoded strings, aborting at the first error
+char *URLDecode(char *str)
+{
+    char *o = (char *)malloc(strlen(str) + 1);
+    char *p = o;
+    while (*str) {
+        if (*str == '+') {
+            *(p++) = ' ';
+            str++;
+        } else if (*str == '%') {
+            unsigned int hex;
+            if ((!str[1]) || (!str[2]) || (sscanf(str+1, "%2x", &hex) != 1)) {
+                *p = 0;
+                return o;
+            }
+            *(p++) = (char) hex & 0xff;
+            str += 3;
+        } else *(p++) = *(str++);
+    }
+    *p = 0;
+    return o;
+}
+
+kv_t *ParseURIParams(char *uri)
+{
+    // Find the first argument, if it exists
+    while ((*uri) && (*uri!='?')) uri++;
+    if (*uri == 0) return NULL; // No parameters
+    *(uri++) = 0; // Stop uri string there
+    kv_t *arg = NULL;
+    int args = 0;
+    while (*uri) {
+        char *startArg = uri;
+        // Look for end & or 0
+        while ((*uri) && (*uri != '&')) uri++;
+        if (*uri=='&') *(uri++) = 0;
+        char *name = startArg;
+        while ((*startArg) && (*startArg != '=')) startArg++;
+        if (*startArg == '=') *(startArg++) = 0;
+        arg = (kv_t *)realloc(arg, sizeof(kv_t) * (args+1));
+        if (startArg == uri) {
+            // No or empty parameter
+            arg[args].key = strdup(name);
+            arg[args].value = strdup("");
+            args++;
+        } else {
+            arg[args].key = strdup(name);
+            arg[args].value = URLDecode(startArg);
+            args++;
+        }
+    }
+    // Add end marker
+    arg = (kv_t *)realloc(arg, sizeof(kv_t) * (args+1));
+    arg[args].key = NULL;
+    arg[args].value = NULL;
+    return arg;
+}
+
+void FreeKV(kv_t *kv)
+{
+    if (!kv) return;
+    kv_t *s = kv;
+    while (kv->key) {
+        free(kv->key);
+        free(kv->value);
+        kv++;
+    }
+    free(s);
+}
+
+const char *GetKV(kv_t *kv, const char *key)
+{
+    while (kv && kv->key) {
+        if (!strcmp(kv->key, key)) return kv->value;
+        else kv++;
+    }
+    return NULL;
 }
 
 
@@ -153,8 +231,10 @@ static void *WebserverThread(void *ptr)
         }
         char *output = NULL;
         bool handled = false;
+        kv_t *kv = ParseURIParams(uri);
         if (requestHandler)
-            handled = requestHandler(uri, &output);
+            handled = requestHandler(uri, kv, &output);
+        FreeKV(kv);
         if (!handled || !output) {
             WebError(fp, "404 Not Found", NULL, "The requested resource was not found.");
         } else {
