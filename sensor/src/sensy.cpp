@@ -13,6 +13,7 @@
 #include "clock.h"
 #include "eeprom.h"
 #include "thermistor.h"
+#include "switch.h"
 // INO has "some" issues, just include the source here...
 #include "../lib/coding.h"
 #include "../lib/coding.cpp"
@@ -43,9 +44,6 @@ uint16_t gwYear = 0;
 uint8_t  gwMon = 0;
 uint8_t  gwDay = 0;
 uint8_t  gwWeekday = 0;
-
- 
-const int mySwitch0 = 2;
 
 // Disable everything we can think of in the ADC block
 void ShutdownADC()
@@ -177,7 +175,6 @@ void SetJoinMessage(uint8_t *msg, uint8_t protoVersion, uint8_t mac[4],
 
 
 
-void PowerSensors(bool powered);
 bool CheckSensors();
 
 // Is this report due to an event (interrupt)?  If so, send it out with
@@ -212,7 +209,6 @@ void ZZZ(uint16_t secs)
     set_sleep_mode (SLEEP_MODE_PWR_DOWN);
 
     ShutdownADC(); // Should already be down, but just in case...
-    PowerSensors(false); // Don't waste power when we're lot looking
 
     secs = secs * 31; // ~1/32ms
     irq = false;
@@ -223,10 +219,8 @@ void ZZZ(uint16_t secs)
         // Brown-out detector disabled by fuses
         interrupts ();             // guarantees next instruction executed
         sleep_cpu ();              // sleep within 3 clock cycles of above
-        PowerSensors(true);
         secs--;
         irq = CheckSensors();
-        PowerSensors(false);
     }
 
     // Reset entropy WDT
@@ -240,53 +234,28 @@ const int16_t sampleDelay = 10;;
 // Any continuously powered sensors need to be set up here
 void SetupSensors()
 {
-    // Ensure that we don't register power-on value as a change event
-    PowerSensors(true);
-    CheckSensors();
-    CheckSensors();
-    CheckSensors();
-    PowerSensors(false);
+    // Nothing to do so far...
 }
 
-
-// Sensors will be powered up as soon as WDT goes off, then scanned once
-// some housekeeping done.  This gives them some time to charge/discharge
-// input capacitance while we do useful work.
-void PowerSensors(bool powered)
-{
-    if (powered) {
-        pinMode(mySwitch0, INPUT_PULLUP);
-    } else {
-        pinMode(mySwitch0, OUTPUT);
-        digitalWrite(mySwitch0, LOW);
-    }
-}
-
-bool switch0 = false;
-int16_t thermTemp = 0;
+Thermistor thermistor(10, A0);
+Switch sw0(2, false);
 
 bool CheckSensors()
 {
-    static bool lastSwitch0 = false;
-    static bool nextSwitch0 = false; // Debounce by only updating global switch state on 2 consecutive reads same
     bool wantIRQ = false;
+    thermistor.Poll();
 
-    if (digitalRead(mySwitch0) == LOW) nextSwitch0 = false;
-    else nextSwitch0 = true;
-    if (lastSwitch0 == nextSwitch0) {
-        if (switch0 != nextSwitch0) wantIRQ = true;
-        switch0 = nextSwitch0;
-    }
-    lastSwitch0 = nextSwitch0;
+    bool old = sw0.Value();
+    sw0.Poll();
+    if (sw0.Value() != old) wantIRQ = true;
 
-    thermTemp = ReadThermistor(10, A0);
     return wantIRQ;
 }
 
 
 void SetupReportMsg(uint8_t *msg)
 {
-    const uint8_t report[] = { PERCENT, ONEFLAG, UINT8, UINT8, FIXPT16X10 };
+    const uint8_t report[] = { PERCENT, ONEFLAG, UINT8, EIGHTFLAG, FIXPT16X10 };
     const uint8_t reports = sizeof(report)/sizeof(report[0]);
     memset(msg+7, 7, 0);
     msg[7] = (reports<<4) & 0xf0;
@@ -303,7 +272,7 @@ bool SetupSensorInfoMsg(uint8_t *msg)
         "Battery",
         "Switch",
         "IntTemp",
-        "ReportNum",
+        "MultiSW",
         "Temp" };
 
     // Have we sent all that we can?
@@ -325,9 +294,9 @@ void UpdateReportMsg(uint8_t *msg)
     else if (battPct > maxVolt) battPct = 100; // > 3.0V = 100%
     else battPct = ((battPct-minVolt)*100) / (maxVolt - minVolt);
                    //  batt * [ (100-0) / (max-min) ] 
-    int16_t temp = ReadThermistor(10, A0);
+    int16_t thermTemp = thermistor.Value();
     msg[1] = battPct & 0xff;
-    msg[2] = switch0?0xff:0x00;
+    msg[2] = sw0.Value()?0xff:0x00;
     msg[3] = bt & 0xff;
     msg[4] = cnt++;
     msg[5] = thermTemp&0xff;
@@ -396,7 +365,7 @@ void setup()
     ClockNormal();
 
     if (debug) {
-        Serial.begin(9600);
+        Serial.begin(GetClockFreq()==8000?9600:19200);
         Serial.println("Initializing...");
         Serial.flush();
     }
@@ -415,7 +384,7 @@ void setup()
 
 #if debugtemp
     while (1) {
-        int16_t a = ReadThermistor(10, A0);
+        int16_t a = thermistor.Read();
         Serial.print("TEMP = ");
         Serial.println(a);
     }

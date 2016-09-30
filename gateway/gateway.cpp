@@ -135,7 +135,7 @@ void SerializeSensors()
     if (fp) {
         json_object *jsonSensors = json_object_new_array();
         for (int i=0; i<sensors; i++) {
-            if (!gSensor[i].joined) return; // Non-joined sensor, nothing to save yet
+            if (!gSensor[i].joined) continue; // Non-joined sensor, nothing to save yet
             json_object *jsonSensor = json_object_new_object();
             char buff[16];
             sprintf(buff, "%08X", gSensor[i].id);
@@ -481,6 +481,7 @@ void ListenerLoop()
                 gSensor[sensors-1].joined = false;
                 gSensor[sensors-1].state = WAITJOIN;
                 joinTimeout = time(NULL) + joinMaxTime;
+                AddLogLine("Starting JOIN...\n");
                 pthread_mutex_unlock( &mutexSensor );
                 continue;
             }
@@ -524,6 +525,7 @@ void ListenerLoop()
         }
         if (!handled) {
             // Nobody got it.  Sounds like garbage to me...
+            logHex("Unhandled packet: ", msg, 16);
             packetsBad++;
         }
     }
@@ -608,6 +610,7 @@ bool HandleSensor(uint8_t msg[16], sensor_t *sensor)
     }
 
     if (!CheckMessageAES(decMsg, sensor->joined?sensor->aesKey:NULL, msg)) {
+        if (!sensor->joined) AddLogLine("CRC mismatch on join listen packet\n");
         // CRC mismatch, throw out
         return false;
     }
