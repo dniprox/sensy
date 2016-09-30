@@ -13,6 +13,7 @@
 #include "clock.h"
 #include "eeprom.h"
 #include "thermistor.h"
+#include "internalsensors.h"
 #include "switch.h"
 // INO has "some" issues, just include the source here...
 #include "../lib/coding.h"
@@ -57,69 +58,6 @@ void ShutdownADC()
     ACSR = 0x80;
     power_adc_disable();
 }
-
-
-// Reads the 2 interesting internal sensors to determine, roughly, VCC(Vbatt) and Tambient
-// Combined into 2 function to allow sharing of ADC power-up times
-// Return a packed 16-bit quantity as I'm not sure if gcc-avr can return a struct w/o the stack
-// MSB = (vcc-1.0) * 100 (i.e.  VCC=2.9V => return = (2.9-1.0) * 100 = 190
-// LSB = (TEMP in C)
-uint16_t ReadInternalBatteryTempFast()
-{
-    uint16_t batt;
-    uint16_t temp;
-
-    power_adc_enable();  // Need to be powered on before we write any registers
-
-    ADCSRA = 0x83; //  ADCEN=1,PS=/8 (1MHz w/8MHz clock)...will be lower quality, but so is the input signal
-
-    // Set bandgap input
-    ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-    ClockDelay(5);
-
-    // And...start ADC and busy wait until it's done
-    ADCSRA |= _BV(ADSC);
-    while (bit_is_set(ADCSRA,ADSC)) {/*busy wait */ }
-
-    // Read it out
-    uint8_t l = ADCL;
-    uint8_t h = ADCH;
-    uint16_t res = (h<<8) | l;
-
-    // Scale results:  VCC=1023L, Vref=1100mV;
-    // Vref(mV)/Vref(cnt) = VCC(mV)/1023 => Vref(mV)*1023/Vref(cnt) = VCC(mV)
-    batt = (1100L*1023L) / res; // 1100mV, 2^10 as max
-    
-    // If 2.4V or below need to run at 4MHz, not 8, so signal this
-    ClockSetLowBatt((batt <= 2400)?true:false);
-
-    batt -= 1000; // bat = bat - 1.0V
-    batt /= 10; // 1000 => 100 
-    if (batt > 255) batt = 255; // Can't return above 3.55V
-
-    // Set the internal reference and mux.
-    ADMUX = (_BV(REFS1) | _BV(REFS0) | _BV(MUX3));
-    ClockDelay(5);
-
-    // And...start ADC and busy wait until it's done
-    ADCSRA |= _BV(ADSC);
-    while (bit_is_set(ADCSRA,ADSC)) {/*busy wait */ }
-
-    // Read it out
-    l = ADCL;
-    h = ADCH;
-    res = (h<<8) | l;
-
-    // Offset taken from Arduino website, may not be very accurate
-    // Keep everything in integer by scaling by 50 on both sides
-    temp = (50*res - 16205 /*324.31*50*/ ) / 61 /*1.22*50*/;
-    if (temp > 255) temp = 255; // !!! We be hot
-
-    ShutdownADC();
-
-    return (batt<<8) | temp;
-}
-
 
 
 #if debug
@@ -237,12 +175,17 @@ void SetupSensors()
     // Nothing to do so far...
 }
 
+InternalSensors intSens;
 Thermistor thermistor(10, A0);
 Switch sw0(2, false);
 
 bool CheckSensors()
 {
     bool wantIRQ = false;
+
+    intSens.Poll();
+    ClockSetLowBatt((intSens.VoltValue() <= 2400)?true:false);
+
     thermistor.Poll();
 
     bool old = sw0.Value();
@@ -286,18 +229,20 @@ bool SetupSensorInfoMsg(uint8_t *msg)
 void UpdateReportMsg(uint8_t *msg)
 {
     static uint8_t cnt = 0;
-    uint16_t bt = ReadInternalBatteryTempFast();
-    uint16_t battPct= ((bt>>8)& 0xff);
-    const uint16_t minVolt = 90; // 1.9V due to NRF
-    const uint16_t maxVolt = 200; // 3.0V from 2xAA 1.5V
-    if (battPct < minVolt) battPct = 0;  // <1.9 = 0%
-    else if (battPct > maxVolt) battPct = 100; // > 3.0V = 100%
-    else battPct = ((battPct-minVolt)*100) / (maxVolt - minVolt);
+    uint16_t bt = intSens.VoltValue();
+    const uint16_t minVolt = 1900; // 1.9V due to NRF
+    const uint16_t maxVolt = 3000; // 3.0V from 2xAA 1.5V
+    uint16_t battPct = 0;
+    if (bt < minVolt) battPct = 0;  // <1.9 = 0%
+    else if (bt > maxVolt) battPct = 100; // > 3.0V = 100%
+    else battPct = ((bt-minVolt)*100L) / (maxVolt - minVolt);
                    //  batt * [ (100-0) / (max-min) ] 
+    uint16_t tp = intSens.TempValue();
+    if (debug) { Serial.print("BATT="); Serial.println(bt);  Serial.print("TEMP="); Serial.println(tp); } 
     int16_t thermTemp = thermistor.Value();
     msg[1] = battPct & 0xff;
     msg[2] = sw0.Value()?0xff:0x00;
-    msg[3] = bt & 0xff;
+    msg[3] = tp & 0xff;
     msg[4] = cnt++;
     msg[5] = thermTemp&0xff;
     msg[6] = (thermTemp>>8) & 0xff;
@@ -359,8 +304,12 @@ void setup()
 {
     // We start at INTOSC/8 = 1MHz, so let's check the battery
     // and move to proper speed
-    ReadInternalBatteryTempFast();
-    ReadInternalBatteryTempFast();
+    intSens.Poll();
+    intSens.Poll();
+    intSens.Poll();
+    intSens.Poll();
+    ClockSetLowBatt((intSens.VoltValue() <= 2400)?true:false);
+
     ClockSlow();
     ClockNormal();
 
