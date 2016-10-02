@@ -39,7 +39,7 @@ void Switch::Poll()
         digitalWrite(pwrPin, HIGH);
     }
     // Shift the state up
-    memcpy(&sample[1], &sample[0], sizeof(sample[0]) * (samples-1));
+    memcpy(sample, sample+1, sizeof(sample[0]) * (samples-1));
     // Poll
     sample[samples-1] = (digitalRead(inpPin)==HIGH)?true:false;
 
